@@ -1,0 +1,25 @@
+import { createTransport, type EditorTransport } from '../src/main';
+import { liveExtensions } from '../src/live/decorations';
+import { decodeSource, encodeSource } from '../src/editor/source';
+import { renderMarkdown } from '../src/render/markdown';
+import type { Envelope } from '../src/protocol';
+const api=window as any;
+let transport:EditorTransport|undefined;
+let assets:Record<string,string>={};
+let nextID=0;
+const identity={documentID:'final-live-document',sessionID:'final-live-session'};
+const receive=(type:string,payload:unknown)=>transport!.receive({v:1,...identity,id:`native-${++nextID}`,type,payload});
+api.bootNative=async(raw:string,capabilities:Record<string,string>={},mode:'live'|'source'='live')=>{
+  api.session?.destroy();api.retEditor?.destroy();transport?.destroy();
+  document.body.innerHTML='<main id="editor" class="markdown-body"></main>';
+  assets=capabilities;api.nativeMessages=[] as Envelope[];
+  transport=createTransport(document.querySelector('#editor')!,identity,envelope=>api.nativeMessages.push(envelope),destination=>assets[destination]??null);
+  transport.installLiveExtensions(liveExtensions);api.nativeTransport=transport;
+  const source=decodeSource(new TextEncoder().encode(raw));
+  const reply=await receive('load',{snapshot:{...source,revision:0},mode,selection:{anchor:source.text.length,head:source.text.length},assetBase:'',appearance:'light',zoom:1});
+  if(reply.type!=='loaded') throw new Error(JSON.stringify(reply));
+};
+api.nativeBytes=()=>Array.from(encodeSource(transport!.session!.snapshot()));
+api.nativeCommand=(name:string,args?:unknown)=>receive('command',{name,args});
+api.nativeSelect=(anchor:number,head=anchor)=>{transport!.session!.dispatch({selection:{anchor,head}});transport!.session!.view!.focus();};
+api.nativeRender=()=>renderMarkdown(transport!.session!.snapshot().text,{resolveImage:destination=>assets[destination]??null});

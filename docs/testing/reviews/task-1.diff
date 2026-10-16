@@ -1,0 +1,687 @@
+# Task 1 review package
+All files are new; no Git exists. Captured after implementer completion.
+
+--- /dev/null
++++ web/src/protocol.ts
+@@ -0,0 +1,45 @@
++/** Protocol v1. All offsets are UTF-16 in LF-normalized text. */
++export type EOL = '\n' | '\r\n' | '\r';
++export type Revision = number;
++export type Range = { from: number; to: number };
++export type Selection = { anchor: number; head: number };
++export type Source = { text: string; eols: EOL[]; bom: boolean };
++export type Snapshot = Source & { revision: Revision };
++export type Patch = Range & { insert: string; eols: EOL[] };
++export type CommitReason = 'edit' | 'undo' | 'redo' | 'assets';
++export type Commit = { base: Revision; revision: Revision; patches: Patch[]; selection: Selection; reason: CommitReason };
++export type Mode = 'live' | 'source';
++export type Appearance = 'system' | 'light' | 'dark';
++export type SnapshotPurpose = 'save' | 'export' | 'close';
++export type CommandName = 'undo' | 'redo' | 'format' | 'find' | 'replace' | 'replaceAll' |
++  'copySource' | 'copyPlain' | 'copyRich' | 'insertImage' | 'setMode' | 'setAppearance' | 'setZoom' | 'revealRange' |
++  'setReadOnly'; // Internal Save As transaction lock.
++export type EditorCommand = { name: CommandName; args?: unknown };
++
++export interface Payloads {
++  ready: Record<string, never>;
++  load: { snapshot: Snapshot; mode: Mode; selection: Selection; assetBase: string; appearance: Appearance; zoom: number };
++  loaded: { revision: Revision };
++  commit: Commit;
++  ack: { revision: Revision };
++  resyncRequired: { expected: Revision };
++  barrier: { purpose: SnapshotPurpose };
++  snapshot: { snapshot: Snapshot; selection: Selection; composing: boolean };
++  command: EditorCommand;
++  result: { ok: boolean; error?: string };
++  applyPatches: { base: Revision; patches: Patch[]; reason: 'assets' };
++  saved: { revision: Revision; contentHash: string };
++  state: { revision: Revision; selection: Selection; canUndo: boolean; canRedo: boolean; composing: boolean; mode: Mode };
++  clipboardWrite: { text: string; html?: string };
++  openLink: { url: string };
++  assetRequest: { action: 'paste' | 'choose' | 'drop'; requestID: string };
++  error: { code: string; message: string; range?: Range };
++}
++export type MessageType = keyof Payloads;
++/** Distributive union preserves the type/payload relationship when T is omitted. */
++export type Envelope<T extends MessageType = MessageType> = {
++  [K in T]: { v: 1; documentID: string; sessionID: string; id: string; replyTo?: string; type: K; payload: Payloads[K] }
++}[T];
++export type BridgeEnvelope<T extends MessageType = MessageType> = Envelope<T>;
++export const WEB_MESSAGE_TYPES = ['ready', 'loaded', 'commit', 'snapshot', 'result', 'state', 'clipboardWrite', 'openLink', 'assetRequest', 'error'] as const satisfies readonly MessageType[];
++export const NATIVE_MESSAGE_TYPES = ['load', 'ack', 'resyncRequired', 'barrier', 'command', 'applyPatches', 'saved', 'result', 'error'] as const satisfies readonly MessageType[];
+
+--- /dev/null
++++ web/src/editor/source.ts
+@@ -0,0 +1,84 @@
++import type { EOL, Patch, Source } from '../protocol';
++
++const high = (unit: number) => unit >= 0xd800 && unit <= 0xdbff;
++const low = (unit: number) => unit >= 0xdc00 && unit <= 0xdfff;
++
++/** TextEncoder replaces lone surrogates; reject them before any encoding. */
++function validateText(text: string, eols: readonly EOL[]): void {
++  if (typeof text !== 'string' || !Array.isArray(eols)) throw new Error('Invalid source text or EOL array');
++  let lines = 0;
++  for (let i = 0; i < text.length; i++) {
++    const unit = text.charCodeAt(i);
++    if (unit === 13) throw new Error('Text must be LF-normalized');
++    if (unit === 10) lines++;
++    if (high(unit)) {
++      if (!low(text.charCodeAt(++i))) throw new Error('Unpaired high surrogate');
++    } else if (low(unit)) throw new Error('Unpaired low surrogate');
++  }
++  if (eols.length !== lines) throw new Error('EOL cardinality does not match text');
++  for (const eol of eols) {
++    if (eol !== '\n' && eol !== '\r\n' && eol !== '\r') throw new Error('Invalid EOL');
++  }
++}
++
++function validateSource(source: Source): void {
++  if (!source || typeof source.bom !== 'boolean') throw new Error('Invalid source BOM');
++  validateText(source.text, source.eols);
++}
++
++export function decodeSource(bytes: Uint8Array): Source {
++  // ignoreBOM:true keeps U+FEFF in the decoded string so exactly one is removed here.
++  const decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
++  const bom = decoded.startsWith('\ufeff');
++  const eols: EOL[] = [];
++  const text = decoded.slice(bom ? 1 : 0).replace(/\r\n|\r|\n/g, eol => {
++    eols.push(eol as EOL);
++    return '\n';
++  });
++  return { text, eols, bom };
++}
++
++export function encodeSource(source: Source): Uint8Array {
++  validateSource(source);
++  let line = 0;
++  const text = source.text.replace(/\n/g, () => source.eols[line++]);
++  return new TextEncoder().encode((source.bom ? '\ufeff' : '') + text);
++}
++
++export function applyPatches(source: Source, patches: readonly Patch[]): Source {
++  validateSource(source);
++  if (!Array.isArray(patches)) throw new Error('Invalid patches');
++  const boundary = (offset: number) => Number.isSafeInteger(offset) && offset >= 0 && offset <= source.text.length &&
++    !(high(source.text.charCodeAt(offset - 1)) && low(source.text.charCodeAt(offset)));
++  let previousEnd = 0;
++  for (const patch of patches) {
++    if (!patch || !boundary(patch.from) || !boundary(patch.to) || patch.from < previousEnd || patch.to < patch.from) {
++      throw new Error('Invalid, overlapping or unsorted UTF-16 patch range');
++    }
++    validateText(patch.insert, patch.eols);
++    previousEnd = patch.to;
++  }
++
++  const pieces: string[] = [];
++  const eols: EOL[] = [];
++  let cursor = 0;
++  let line = 0;
++  // Walk original text once; patch coordinates always refer to this original text.
++  const consume = (end: number, keep: boolean) => {
++    if (keep) pieces.push(source.text.slice(cursor, end));
++    for (; cursor < end; cursor++) {
++      if (source.text.charCodeAt(cursor) === 10) {
++        if (keep) eols.push(source.eols[line]);
++        line++;
++      }
++    }
++  };
++  for (const patch of patches) {
++    consume(patch.from, true);
++    consume(patch.to, false);
++    pieces.push(patch.insert);
++    for (const eol of patch.eols) eols.push(eol);
++  }
++  consume(source.text.length, true);
++  return { text: pieces.join(''), eols, bom: source.bom };
++}
+
+--- /dev/null
++++ web/test/source.test.ts
+@@ -0,0 +1,101 @@
++import { readFileSync, readdirSync } from 'node:fs';
++import { describe, expect, it } from 'vitest';
++import { applyPatches, decodeSource, encodeSource } from '../src/editor/source';
++import type { Source, Patch, Envelope, Commit } from '../src/protocol';
++
++const bytes = (text: string) => new TextEncoder().encode(text);
++const decoded = (text: string) => decodeSource(bytes(text));
++const fixtures = new URL('../../build/fixtures/', import.meta.url);
++
++describe('source byte fidelity', () => {
++  it.each(['', '\ufeff', '\ufeff\ufeffx', 'a\r\nb\rc\nend', 'a\r\n', 'a\r', 'a\n', 'e\u0301 ≠ é 😀 中\u0000'])('round trips %j without rewriting bytes', text => {
++    expect(encodeSource(decoded(text))).toEqual(bytes(text));
++  });
++  it('normalizes only terminators and extracts exactly one leading BOM', () => {
++    expect(decoded('\ufeffa\r\nb\rc\n\ufeffe\u0301')).toEqual({
++      text: 'a\nb\nc\n\ufeffe\u0301', eols: ['\r\n', '\r', '\n'], bom: true,
++    });
++  });
++  it.each(readdirSync(fixtures).filter(name => name.endsWith('.md')))('matches controller fixture %s byte for byte', name => {
++    const input = new Uint8Array(readFileSync(new URL(name, fixtures)));
++    expect(encodeSource(decodeSource(input))).toEqual(input);
++  });
++  it.each([[0xff], [0x80], [0xc0, 0xaf], [0xc2], [0xe2, 0x28, 0xa1], [0xed, 0xa0, 0x80], [0xf4, 0x90, 0x80, 0x80], [0xef, 0xbb]])('rejects malformed UTF-8 %j', (...input) => {
++    expect(() => decodeSource(Uint8Array.from(input))).toThrow();
++  });
++  it.each([
++    { text: 'a\n', eols: [], bom: false },
++    { text: 'a', eols: ['\n'], bom: false },
++    { text: 'a\n', eols: ['x'], bom: false },
++    { text: 'a\r', eols: [], bom: false },
++    { text: '\ud800', eols: [], bom: false },
++    { text: '\udc00', eols: [], bom: false },
++    { text: '', eols: [], bom: 'false' },
++  ])('rejects invalid source %j before encoding', input => {
++    expect(() => encodeSource(input as Source)).toThrow();
++    expect(() => applyPatches(input as Source, [])).toThrow();
++  });
++});
++
++describe('simultaneous UTF-16 patches', () => {
++  it('edits a middle paragraph and preserves exact prefix and suffix bytes', () => {
++    const prefix = '\ufeff---\r\nx: e\u0301\r---\n\n';
++    const suffix = '\r\n\r<custom a="x">😀</custom>\n';
++    const source = decoded(prefix + 'middle' + suffix);
++    const from = decoded(prefix).text.length;
++    const before = structuredClone(source);
++    const result = applyPatches(source, [{ from, to: from + 6, insert: '中间', eols: [] }]);
++    expect(encodeSource(result)).toEqual(bytes(prefix + '中间' + suffix));
++    expect(source).toEqual(before);
++  });
++  it('uses pre-transaction positions and replaces only affected EOL entries', () => {
++    const source = decoded('😀a\r\nb\rc\nend');
++    const result = applyPatches(source, [
++      { from: 2, to: 4, insert: 'X\nY\n', eols: ['\r', '\r\n'] },
++      { from: 6, to: 7, insert: 'Z', eols: [] },
++    ]);
++    expect(encodeSource(result)).toEqual(bytes('😀X\rY\r\nb\rZ\nend'));
++  });
++  it('allows edits between combining scalars and complete emoji', () => {
++    expect(applyPatches(decoded('e\u0301😀'), [{ from: 1, to: 2, insert: '', eols: [] }]).text).toBe('e😀');
++    expect(applyPatches(decoded('e\u0301😀'), [{ from: 2, to: 4, insert: '中', eols: [] }]).text).toBe('e\u0301中');
++  });
++  it('preserves insertion ordering for adjacent zero-width patches', () => {
++    expect(applyPatches(decoded('ab'), [
++      { from: 1, to: 1, insert: 'X', eols: [] },
++      { from: 1, to: 1, insert: 'Y', eols: [] },
++    ]).text).toBe('aXYb');
++  });
++  it('can remove every terminator without adding a final newline', () => {
++    expect(encodeSource(applyPatches(decoded('a\r\nb\rc\n'), [
++      { from: 1, to: 6, insert: '', eols: [] },
++    ]))).toEqual(bytes('a'));
++  });
++  const p = (from: number, to: number, insert = '', eols: string[] = []) => ({ from, to, insert, eols });
++  it.each([
++    [p(1, 2)], [p(0, 1)], [p(-1, 0)], [p(0, 99)], [p(3, 2)], [p(0.5, 2)],
++    [p(NaN, 2)], [p(0, Infinity)], [p(Number.MAX_SAFE_INTEGER + 1, 0)],
++    [p(3, 3), p(2, 2)], [p(0, 3), p(2, 4)],
++    [p(2, 2, '\r')], [p(2, 2, '\n')], [p(2, 2, '', ['\n'])],
++    [p(2, 2, '\n', ['bad'])], [p(2, 2, '\ud800')],
++    [p(2, 2, 'valid'), p(3, 4, '\n')],
++  ])('rejects malformed transaction %j atomically', (...patches) => {
++    const source = decoded('😀a\r\nb');
++    const before = structuredClone(source);
++    expect(() => applyPatches(source, patches as Patch[])).toThrow();
++    expect(source).toEqual(before);
++  });
++});
++
++it('serializes the architecture commit envelope without renaming or nesting fields', () => {
++  const message: Envelope<'commit'> = {
++    v: 1, documentID: 'doc', sessionID: 'session', id: 'web-1', type: 'commit',
++    payload: { base: 0, revision: 1, patches: [{ from: 0, to: 0, insert: '😀\n', eols: ['\r\n'] }],
++      selection: { anchor: 3, head: 3 }, reason: 'edit' } satisfies Commit,
++  };
++  expect(JSON.parse(JSON.stringify(message))).toEqual({
++    v: 1, documentID: 'doc', sessionID: 'session', id: 'web-1', type: 'commit',
++    payload: { base: 0, revision: 1, patches: [{ from: 0, to: 0, insert: '😀\n', eols: ['\r\n'] }],
++      selection: { anchor: 3, head: 3 }, reason: 'edit' },
++  });
++});
+
+--- /dev/null
++++ Sources/ReTMarkdown/Bridge/BridgeTypes.swift
+@@ -0,0 +1,161 @@
++import Foundation
++
++public typealias EOL = String
++public typealias Revision = Int
++
++private let maxWireInteger = 9_007_199_254_740_991
++private func requireWire(_ condition: Bool, _ decoder: Decoder, _ message: String) throws {
++    guard condition else {
++        throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: message))
++    }
++}
++private extension KeyedDecodingContainer {
++    func wireInteger(_ key: Key) throws -> Int {
++        let value = try decode(Int.self, forKey: key)
++        guard value >= 0, value <= maxWireInteger else {
++            throw DecodingError.dataCorruptedError(forKey: key, in: self, debugDescription: "Expected nonnegative JS safe integer")
++        }
++        return value
++    }
++}
++
++/// Text is LF-normalized. One original terminator is retained for every LF.
++public struct Source: Codable, Equatable, Sendable {
++    public var text: String
++    public var eols: [EOL]
++    public var bom: Bool
++    public init(text: String = "", eols: [EOL] = [], bom: Bool = false) {
++        self.text = text; self.eols = eols; self.bom = bom
++    }
++    public static func == (lhs: Source, rhs: Source) -> Bool {
++        lhs.bom == rhs.bom && lhs.eols == rhs.eols && lhs.text.utf8.elementsEqual(rhs.text.utf8)
++    }
++    private enum CodingKeys: String, CodingKey { case text, eols, bom }
++    public init(from decoder: Decoder) throws {
++        let fields = try decoder.container(keyedBy: CodingKeys.self)
++        text = try fields.decode(String.self, forKey: .text)
++        eols = try fields.decode([EOL].self, forKey: .eols)
++        bom = try fields.decode(Bool.self, forKey: .bom)
++        try SourceCodec.validate(text: text, eols: eols)
++    }
++}
++
++/// Flat wire shape: {text,eols,bom,revision}, never {source,revision}.
++public struct Snapshot: Codable, Equatable, Sendable {
++    public var text: String
++    public var eols: [EOL]
++    public var bom: Bool
++    public var revision: Revision
++    public var source: Source { Source(text: text, eols: eols, bom: bom) }
++    public init(text: String = "", eols: [EOL] = [], bom: Bool = false, revision: Revision = 0) {
++        self.text = text; self.eols = eols; self.bom = bom; self.revision = revision
++    }
++    public init(source: Source, revision: Revision = 0) {
++        self.init(text: source.text, eols: source.eols, bom: source.bom, revision: revision)
++    }
++    public static func == (lhs: Snapshot, rhs: Snapshot) -> Bool {
++        lhs.revision == rhs.revision && lhs.source == rhs.source
++    }
++    private enum CodingKeys: String, CodingKey { case text, eols, bom, revision }
++    public init(from decoder: Decoder) throws {
++        let source = try Source(from: decoder)
++        let fields = try decoder.container(keyedBy: CodingKeys.self)
++        self.init(source: source, revision: try fields.wireInteger(.revision))
++    }
++}
++
++public struct SourceRange: Codable, Equatable, Sendable {
++    public var from: Int
++    public var to: Int
++    public init(from: Int, to: Int) { self.from = from; self.to = to }
++    private enum CodingKeys: String, CodingKey { case from, to }
++    public init(from decoder: Decoder) throws {
++        let fields = try decoder.container(keyedBy: CodingKeys.self)
++        from = try fields.wireInteger(.from)
++        to = try fields.wireInteger(.to)
++        try requireWire(from <= to, decoder, "Reversed range")
++    }
++}
++public struct Selection: Codable, Equatable, Sendable {
++    public var anchor: Int
++    public var head: Int
++    public init(anchor: Int = 0, head: Int = 0) { self.anchor = anchor; self.head = head }
++    private enum CodingKeys: String, CodingKey { case anchor, head }
++    public init(from decoder: Decoder) throws {
++        let fields = try decoder.container(keyedBy: CodingKeys.self)
++        anchor = try fields.wireInteger(.anchor)
++        head = try fields.wireInteger(.head)
++    }
++}
++public struct Patch: Codable, Equatable, Sendable {
++    public var from: Int
++    public var to: Int
++    public var insert: String
++    public var eols: [EOL]
++    public init(from: Int, to: Int, insert: String = "", eols: [EOL] = []) {
++        self.from = from; self.to = to; self.insert = insert; self.eols = eols
++    }
++    private enum CodingKeys: String, CodingKey { case from, to, insert, eols }
++    public init(from decoder: Decoder) throws {
++        let range = try SourceRange(from: decoder)
++        let fields = try decoder.container(keyedBy: CodingKeys.self)
++        from = range.from; to = range.to
++        insert = try fields.decode(String.self, forKey: .insert)
++        eols = try fields.decode([EOL].self, forKey: .eols)
++        try SourceCodec.validate(text: insert, eols: eols)
++    }
++}
++public enum CommitReason: String, Codable, Sendable { case edit, undo, redo, assets }
++public struct Commit: Codable, Equatable, Sendable {
++    public var base: Revision
++    public var revision: Revision
++    public var patches: [Patch]
++    public var selection: Selection
++    public var reason: CommitReason
++    public init(base: Revision, revision: Revision, patches: [Patch], selection: Selection, reason: CommitReason) {
++        self.base = base; self.revision = revision; self.patches = patches; self.selection = selection; self.reason = reason
++    }
++    private enum CodingKeys: String, CodingKey { case base, revision, patches, selection, reason }
++    public init(from decoder: Decoder) throws {
++        let fields = try decoder.container(keyedBy: CodingKeys.self)
++        base = try fields.wireInteger(.base)
++        revision = try fields.wireInteger(.revision)
++        patches = try fields.decode([Patch].self, forKey: .patches)
++        selection = try fields.decode(Selection.self, forKey: .selection)
++        reason = try fields.decode(CommitReason.self, forKey: .reason)
++        try requireWire(revision > base, decoder, "Commit revision must increase")
++    }
++}
++public enum Mode: String, Codable, Sendable { case live, source }
++public enum Appearance: String, Codable, Sendable { case system, light, dark }
++public enum BridgeMessageType: String, Codable, Sendable, CaseIterable {
++    case ready, load, loaded, commit, ack, resyncRequired, barrier, snapshot, command, result
++    case applyPatches, saved, state, clipboardWrite, openLink, assetRequest, error
++}
++/// Origin, session identity and payload size validation belongs to the native bridge.
++public struct BridgeEnvelope<Payload: Codable & Sendable>: Codable, Sendable {
++    public var v: Int
++    public var documentID: String
++    public var sessionID: String
++    public var id: String
++    public var replyTo: String?
++    public var type: BridgeMessageType
++    public var payload: Payload
++    public init(v: Int = 1, documentID: String, sessionID: String, id: String, replyTo: String? = nil, type: BridgeMessageType, payload: Payload) {
++        self.v = v; self.documentID = documentID; self.sessionID = sessionID; self.id = id
++        self.replyTo = replyTo; self.type = type; self.payload = payload
++    }
++    private enum CodingKeys: String, CodingKey { case v, documentID, sessionID, id, replyTo, type, payload }
++    public init(from decoder: Decoder) throws {
++        let fields = try decoder.container(keyedBy: CodingKeys.self)
++        v = try fields.decode(Int.self, forKey: .v)
++        documentID = try fields.decode(String.self, forKey: .documentID)
++        sessionID = try fields.decode(String.self, forKey: .sessionID)
++        id = try fields.decode(String.self, forKey: .id)
++        replyTo = try fields.decodeIfPresent(String.self, forKey: .replyTo)
++        type = try fields.decode(BridgeMessageType.self, forKey: .type)
++        payload = try fields.decode(Payload.self, forKey: .payload)
++        try requireWire(v == 1, decoder, "Unsupported bridge version")
++        try requireWire(!documentID.isEmpty && !sessionID.isEmpty && !id.isEmpty, decoder, "Empty bridge identity")
++    }
++}
+
+--- /dev/null
++++ Sources/ReTMarkdown/Storage/SourceCodec.swift
+@@ -0,0 +1,100 @@
++import Foundation
++
++public enum SourceCodecError: Error, Equatable, Sendable {
++    case invalidUTF8, invalidSource, invalidPatch
++}
++public enum SourceCodec {
++    public static func decode(_ data: Data) throws -> Source {
++        // Foundation's failable initializer rejects malformed UTF-8; never use a repairing decoder here.
++        guard String(data: data, encoding: .utf8) != nil else { throw SourceCodecError.invalidUTF8 }
++        let bytes = Array(data)
++        let bom = bytes.starts(with: [0xef, 0xbb, 0xbf])
++        var index = bom ? 3 : 0
++        var normalized: [UInt8] = []
++        normalized.reserveCapacity(bytes.count)
++        var eols: [EOL] = []
++        while index < bytes.count {
++            let byte = bytes[index]
++            if byte == 13 {
++                if index + 1 < bytes.count && bytes[index + 1] == 10 {
++                    eols.append("\r\n")
++                    index += 1
++                } else { eols.append("\r") }
++                normalized.append(10)
++            } else {
++                if byte == 10 { eols.append("\n") }
++                normalized.append(byte)
++            }
++            index += 1
++        }
++        return Source(text: String(decoding: normalized, as: UTF8.self), eols: eols, bom: bom)
++    }
++
++    public static func encode(_ source: Source) throws -> Data {
++        try validate(text: source.text, eols: source.eols)
++        var bytes = Data()
++        bytes.reserveCapacity(source.text.utf8.count)
++        if source.bom { bytes.append(contentsOf: [0xef, 0xbb, 0xbf]) }
++        var line = 0
++        for byte in source.text.utf8 {
++            if byte == 10 {
++                bytes.append(contentsOf: source.eols[line].utf8)
++                line += 1
++            } else { bytes.append(byte) }
++        }
++        return bytes
++    }
++
++    public static func applying(_ patches: [Patch], to source: Source) throws -> Source {
++        try validate(text: source.text, eols: source.eols)
++        // Array indexing is deliberately UTF-16, not Swift Character/grapheme indexing.
++        let original = Array(source.text.utf16)
++        var previousEnd = 0
++        for patch in patches {
++            guard isBoundary(patch.from, in: original), isBoundary(patch.to, in: original),
++                  patch.from >= previousEnd, patch.to >= patch.from else { throw SourceCodecError.invalidPatch }
++            try validate(text: patch.insert, eols: patch.eols)
++            previousEnd = patch.to
++        }
++        var result: [UInt16] = []
++        result.reserveCapacity(original.count)
++        var eols: [EOL] = []
++        var cursor = 0
++        var line = 0
++        func consume(until end: Int, keep: Bool) {
++            if keep { result.append(contentsOf: original[cursor..<end]) }
++            while cursor < end {
++                if original[cursor] == 10 {
++                    if keep { eols.append(source.eols[line]) }
++                    line += 1
++                }
++                cursor += 1
++            }
++        }
++        for patch in patches {
++            consume(until: patch.from, keep: true)
++            consume(until: patch.to, keep: false)
++            result.append(contentsOf: patch.insert.utf16)
++            eols.append(contentsOf: patch.eols)
++        }
++        consume(until: original.count, keep: true)
++        return Source(text: String(decoding: result, as: UTF16.self), eols: eols, bom: source.bom)
++    }
++
++    static func validate(text: String, eols: [EOL]) throws {
++        var lines = 0
++        for byte in text.utf8 {
++            if byte == 13 { throw SourceCodecError.invalidSource }
++            if byte == 10 { lines += 1 }
++        }
++        guard lines == eols.count, eols.allSatisfy({ $0 == "\n" || $0 == "\r\n" || $0 == "\r" }) else {
++            throw SourceCodecError.invalidSource
++        }
++    }
++
++    private static func isBoundary(_ offset: Int, in text: [UInt16]) -> Bool {
++        guard offset >= 0, offset <= text.count else { return false }
++        if offset == 0 || offset == text.count { return true }
++        return !(0xd800...0xdbff).contains(text[offset - 1]) || !(0xdc00...0xdfff).contains(text[offset])
++    }
++}
+
+--- /dev/null
++++ Tests/ReTMarkdownTests/SourceCodecTests.swift
+@@ -0,0 +1,169 @@
++import Foundation
++import XCTest
++@testable import ReTMarkdown
++
++final class SourceCodecTests: XCTestCase {
++    func testSourceAndSnapshotIdentityDistinguishesUnicodeBytes() {
++        let composed = Source(text: "é")
++        let decomposed = Source(text: "e\u{301}")
++        XCTAssertNotEqual(composed, decomposed)
++        XCTAssertNotEqual(Snapshot(source: composed), Snapshot(source: decomposed))
++        XCTAssertEqual(Source(text: "😀\n", eols: ["\r"]), Source(text: "😀\n", eols: ["\r"]))
++        XCTAssertNotEqual(Snapshot(source: composed, revision: 1), Snapshot(source: composed, revision: 2))
++    }
++    func testRoundTripBytesAndExactNormalizedMetadata() throws {
++        for text in ["", "\u{feff}", "\u{feff}\u{feff}x", "a\r\nb\rc\nend", "a\r\n", "a\r", "a\n", "e\u{301} ≠ é 😀 中\0"] {
++            let bytes = Data(text.utf8)
++            XCTAssertEqual(try SourceCodec.encode(SourceCodec.decode(bytes)), bytes)
++        }
++        let source = try SourceCodec.decode(Data("\u{feff}a\r\nb\rc\n\u{feff}e\u{301}".utf8))
++        XCTAssertEqual(Array(source.text.utf8), Array("a\nb\nc\n\u{feff}e\u{301}".utf8))
++        XCTAssertEqual(source.eols, ["\r\n", "\r", "\n"])
++        XCTAssertTrue(source.bom)
++        XCTAssertEqual(try SourceCodec.encode(Source()), Data())
++    }
++
++    func testControllerFixturesRoundTrip() throws {
++        let root = URL(fileURLWithPath: #filePath).resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
++        let fixtures = root.appendingPathComponent("build/fixtures")
++        let files = try FileManager.default.contentsOfDirectory(at: fixtures, includingPropertiesForKeys: nil).filter { $0.pathExtension == "md" }
++        XCTAssertGreaterThanOrEqual(files.count, 9)
++        for file in files {
++            let input = try Data(contentsOf: file)
++            XCTAssertEqual(try SourceCodec.encode(SourceCodec.decode(input)), input, file.lastPathComponent)
++        }
++    }
++
++    func testMalformedUTF8Fails() {
++        for input: [UInt8] in [[0xff], [0x80], [0xc0, 0xaf], [0xc2], [0xe2, 0x28, 0xa1], [0xed, 0xa0, 0x80], [0xf4, 0x90, 0x80, 0x80], [0xef, 0xbb]] {
++            XCTAssertThrowsError(try SourceCodec.decode(Data(input)))
++        }
++    }
++
++    func testInvalidSourceFailsEvenWithoutPatches() {
++        for source in [Source(text: "a\n", eols: []), Source(text: "a", eols: ["\n"]), Source(text: "a\n", eols: ["bad"]), Source(text: "a\r")] {
++            XCTAssertThrowsError(try SourceCodec.encode(source))
++            XCTAssertThrowsError(try SourceCodec.applying([], to: source))
++        }
++    }
++
++    func testMiddleEditPreservesPrefixSuffixAndOriginal() throws {
++        let prefix = "\u{feff}---\r\nx: e\u{301}\r---\n\n"
++        let suffix = "\r\n\r<custom a=\"x\">😀</custom>\n"
++        let original = Data((prefix + "middle" + suffix).utf8)
++        let source = try SourceCodec.decode(original)
++        let from = try SourceCodec.decode(Data(prefix.utf8)).text.utf16.count
++        let result = try SourceCodec.applying([Patch(from: from, to: from + 6, insert: "中间", eols: [])], to: source)
++        XCTAssertEqual(try SourceCodec.encode(result), Data((prefix + "中间" + suffix).utf8))
++        XCTAssertEqual(try SourceCodec.encode(source), original)
++    }
++
++    func testSimultaneousPatchesPreserveUnaffectedTerminators() throws {
++        let source = try SourceCodec.decode(Data("😀a\r\nb\rc\nend".utf8))
++        let result = try SourceCodec.applying([
++            Patch(from: 2, to: 4, insert: "X\nY\n", eols: ["\r", "\r\n"]),
++            Patch(from: 6, to: 7, insert: "Z", eols: [])
++        ], to: source)
++        XCTAssertEqual(try SourceCodec.encode(result), Data("😀X\rY\r\nb\rZ\nend".utf8))
++    }
++
++    func testUTF16NotGraphemeCoordinates() throws {
++        let source = Source(text: "e\u{301}😀")
++        let result = try SourceCodec.applying([Patch(from: 1, to: 2, insert: "", eols: [])], to: source)
++        XCTAssertEqual(Array(result.text.utf8), Array("e😀".utf8))
++        let emoji = try SourceCodec.applying([Patch(from: 2, to: 4, insert: "中", eols: [])], to: source)
++        XCTAssertEqual(Array(emoji.text.utf8), Array("e\u{301}中".utf8))
++    }
++
++    func testAdjacentInsertionsAndDeleteThroughEnd() throws {
++        let inserted = try SourceCodec.applying([
++            Patch(from: 1, to: 1, insert: "X", eols: []), Patch(from: 1, to: 1, insert: "Y", eols: [])
++        ], to: Source(text: "ab"))
++        XCTAssertEqual(inserted.text, "aXYb")
++        let deleted = try SourceCodec.applying([Patch(from: 1, to: 6, insert: "", eols: [])], to: SourceCodec.decode(Data("a\r\nb\rc\n".utf8)))
++        XCTAssertEqual(try SourceCodec.encode(deleted), Data("a".utf8))
++    }
++
++    func testMalformedPatchTransactionsFailAtomically() throws {
++        let source = try SourceCodec.decode(Data("😀a\r\nb".utf8))
++        let original = try SourceCodec.encode(source)
++        let invalid: [[Patch]] = [
++            [Patch(from: 1, to: 2)], [Patch(from: 0, to: 1)], [Patch(from: -1, to: 0)],
++            [Patch(from: 0, to: 99)], [Patch(from: 3, to: 2)], [Patch(from: Int.max, to: Int.max)],
++            [Patch(from: 3, to: 3), Patch(from: 2, to: 2)], [Patch(from: 0, to: 3), Patch(from: 2, to: 4)],
++            [Patch(from: 2, to: 2, insert: "\r")], [Patch(from: 2, to: 2, insert: "\n")],
++            [Patch(from: 2, to: 2, eols: ["\n"])], [Patch(from: 2, to: 2, insert: "\n", eols: ["bad"])],
++            [Patch(from: 2, to: 2, insert: "valid"), Patch(from: 3, to: 4, insert: "\n")]
++        ]
++        for patches in invalid {
++            XCTAssertThrowsError(try SourceCodec.applying(patches, to: source))
++            XCTAssertEqual(try SourceCodec.encode(source), original)
++        }
++    }
++
++    func testSnapshotWireIsFlatAndCommitCarriesSelection() throws {
++        let snapshot = Snapshot(source: Source(text: "e\u{301}\n", eols: ["\r"], bom: true), revision: 7)
++        let encoded = try JSONEncoder().encode(snapshot)
++        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
++        XCTAssertEqual(Set(object.keys), ["text", "eols", "bom", "revision"])
++        XCTAssertEqual(object["revision"] as? Int, 7)
++        XCTAssertEqual(try SourceCodec.encode(JSONDecoder().decode(Snapshot.self, from: encoded).source), Data("\u{feff}e\u{301}\r".utf8))
++        let json = #"{"base":0,"revision":1,"patches":[{"from":0,"to":0,"insert":"😀\n","eols":["\r\n"]}],"selection":{"anchor":3,"head":3},"reason":"edit"}"#
++        let commit = try JSONDecoder().decode(Commit.self, from: Data(json.utf8))
++        XCTAssertEqual(commit.selection, Selection(anchor: 3, head: 3))
++        XCTAssertEqual(try SourceCodec.encode(SourceCodec.applying(commit.patches, to: Source())), Data("😀\r\n".utf8))
++        XCTAssertEqual(try JSONSerialization.jsonObject(with: JSONEncoder().encode(commit)) as? NSDictionary, try JSONSerialization.jsonObject(with: Data(json.utf8)) as? NSDictionary)
++    }
++
++    func testWireRejectsInvalidSourceMetadataAndMissingRequiredFields() {
++        for json in [
++            #"{"text":"a\n","eols":[],"bom":false}"#,
++            #"{"text":"a\n","eols":["bad"],"bom":false}"#,
++            #"{"text":"a\r","eols":[],"bom":false}"#,
++            #"{"text":"\ud800","eols":[],"bom":false}"#,
++            #"{"text":"","eols":[]}"#,
++            #"{"text":"","eols":[],"bom":"false"}"#
++        ] {
++            XCTAssertThrowsError(try JSONDecoder().decode(Source.self, from: Data(json.utf8)), json)
++        }
++    }
++
++    func testWireRejectsUnsafeRevisionsOffsetsAndReversedRanges() {
++        for revision in ["-1", "9007199254740992", "1.5"] {
++            let json = "{\"text\":\"\",\"eols\":[],\"bom\":false,\"revision\":\(revision)}"
++            XCTAssertThrowsError(try JSONDecoder().decode(Snapshot.self, from: Data(json.utf8)))
++        }
++        for json in [#"{"anchor":-1,"head":0}"#, #"{"anchor":0,"head":9007199254740992}"#] {
++            XCTAssertThrowsError(try JSONDecoder().decode(Selection.self, from: Data(json.utf8)))
++        }
++        for json in [
++            #"{"from":-1,"to":0,"insert":"","eols":[]}"#,
++            #"{"from":2,"to":1,"insert":"","eols":[]}"#,
++            #"{"from":0,"to":9007199254740992,"insert":"","eols":[]}"#,
++            #"{"from":0,"to":0,"insert":"\n","eols":[]}"#
++        ] {
++            XCTAssertThrowsError(try JSONDecoder().decode(Patch.self, from: Data(json.utf8)))
++        }
++        for json in [#"{"from":2,"to":1}"#, #"{"from":-1,"to":0}"#] {
++            XCTAssertThrowsError(try JSONDecoder().decode(SourceRange.self, from: Data(json.utf8)))
++        }
++        for revisions in [(0, 0), (2, 1), (-1, 1), (0, 9_007_199_254_740_992)] {
++            let json = "{\"base\":\(revisions.0),\"revision\":\(revisions.1),\"patches\":[],\"selection\":{\"anchor\":0,\"head\":0},\"reason\":\"undo\"}"
++            XCTAssertThrowsError(try JSONDecoder().decode(Commit.self, from: Data(json.utf8)))
++        }
++    }
++
++    func testEnvelopeRoundTripVersionAndTypeAllowlist() throws {
++        let json = #"{"v":1,"documentID":"doc","sessionID":"session","id":"web-1","replyTo":"native-1","type":"commit","payload":{"base":0,"revision":1,"patches":[{"from":0,"to":0,"insert":"😀\n","eols":["\r\n"]}],"selection":{"anchor":3,"head":3},"reason":"edit"}}"#
++        let envelope = try JSONDecoder().decode(BridgeEnvelope<Commit>.self, from: Data(json.utf8))
++        XCTAssertEqual(envelope.type, .commit)
++        XCTAssertEqual(envelope.replyTo, "native-1")
++        XCTAssertEqual(try JSONSerialization.jsonObject(with: JSONEncoder().encode(envelope)) as? NSDictionary,
++                       try JSONSerialization.jsonObject(with: Data(json.utf8)) as? NSDictionary)
++        for invalid in [json.replacingOccurrences(of: "\"v\":1", with: "\"v\":2"),
++                        json.replacingOccurrences(of: "\"type\":\"commit\"", with: "\"type\":\"executeScript\""),
++                        json.replacingOccurrences(of: "\"documentID\":\"doc\"", with: "\"documentID\":\"\"")] {
++            XCTAssertThrowsError(try JSONDecoder().decode(BridgeEnvelope<Commit>.self, from: Data(invalid.utf8)))
++        }
++    }
++}
+

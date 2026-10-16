@@ -1,0 +1,1234 @@
+# Task3 review package; new files snapshot, no Git
+
+--- /dev/null
++++ web/src/main.ts
+@@ -0,0 +1,204 @@
++import { createEditor, type EditorSession } from './editor/session';
++import type { LiveExtensionFactory } from './editor/live-contract';
++import { encodeSource } from './editor/source';
++import { NATIVE_MESSAGE_TYPES, type Envelope, type MessageType, type Payloads, type Snapshot } from './protocol';
++
++export interface EditorBootstrap { documentID: string; sessionID: string }
++export interface EditorTransport {
++  readonly session: EditorSession | null;
++  receive(envelope: unknown): Promise<Envelope>;
++  installLiveExtensions(factory: LiveExtensionFactory): void;
++  destroy(): void;
++}
++declare global {
++  interface Window {
++    retEditorBootstrap?: EditorBootstrap;
++    retEditor?: EditorTransport;
++    webkit?: { messageHandlers?: { ret?: { postMessage(envelope: Envelope): void } } };
++  }
++}
++const commands = new Set(['undo', 'redo', 'format', 'find', 'replace', 'replaceAll', 'copySource', 'copyPlain', 'copyRich', 'insertImage', 'setMode', 'setAppearance', 'setZoom', 'revealRange', 'setReadOnly', 'setAssets']);
++const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
++const revision = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
++const identifier = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256;
++function validateSnapshot(value: unknown): asserts value is Snapshot {
++  if (!record(value) || !revision(value.revision)) throw new Error('Invalid snapshot revision');
++  encodeSource(value as unknown as Snapshot);
++}
++function assetMap(value: unknown): Record<string, string> {
++  if (!record(value)) throw new Error('Invalid image capability map');
++  const assets: Record<string, string> = Object.create(null);
++  for (const [destination, capability] of Object.entries(value)) {
++    if (typeof capability !== 'string' || !capability.startsWith('ret-resource://asset/')) throw new Error('Invalid local image capability');
++    // Native mints these opaque UUID capabilities; destinations never become URLs.
++    assets[destination] = capability;
++  }
++  return assets;
++}
++export function createTransport(parent: HTMLElement, identity: EditorBootstrap, post: (envelope: Envelope) => void, fallbackResolver?: (destination: string) => string | null): EditorTransport {
++  if (!identifier(identity.documentID) || !identifier(identity.sessionID)) throw new Error('Invalid bootstrap identity');
++  let session: EditorSession | null = null, sequence = 0, destroyed = false;
++  let assets: Record<string, string> = Object.create(null), liveFactory: LiveExtensionFactory | undefined;
++  const replies = new Map<string, { signature: string; promise: Promise<Envelope> }>();
++  const commits = new Map<string, number>();
++  const snapshotReplies = new Map<string, number>();
++  const requests = new Map<string, { resolve: () => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
++  const send = <T extends MessageType>(type: T, payload: Payloads[T], replyTo?: string): Envelope<T> =>
++    ({ v: 1, ...identity, id: `web-${++sequence}`, type, payload, ...(replyTo ? { replyTo } : {}) }) as Envelope<T>;
++  const publish = (envelope: Envelope) => { if (!destroyed) post(envelope); };
++  const result = (id: string, ok = true, error?: string) => send('result', { ok, ...(error ? { error } : {}) }, id);
++  const snapshot = (id: string) => {
++    if (!session) throw new Error('Editor not loaded');
++    const envelope = send('snapshot', session.barrier(), id);
++    snapshotReplies.set(envelope.id, envelope.payload.snapshot.revision); return envelope;
++  };
++  const resolveImage = (destination: string): string | null => {
++    if (/^(?:[a-z][\w+.-]*:|\/\/)/i.test(destination)) return null;
++    let decoded = destination;
++    try { decoded = decodeURIComponent(destination); } catch { /* Literal malformed escapes remain lookup keys. */ }
++    return assets[decoded] ?? assets[destination] ?? fallbackResolver?.(decoded) ?? null;
++  };
++  const request = (type: 'clipboardWrite', payload: Payloads['clipboardWrite']): Promise<void> => {
++    const envelope = send(type, payload);
++    return new Promise((resolve, reject) => {
++      const timer = setTimeout(() => { requests.delete(envelope.id); reject(new Error('Native clipboard request timed out')); }, 15000);
++      requests.set(envelope.id, { resolve, reject, timer }); publish(envelope);
++    });
++  };
++  const handle = async (envelope: Envelope): Promise<Envelope> => {
++    const { id, type, payload } = envelope;
++    switch (type) {
++      case 'load': {
++        if (session) throw new Error('load initializes a new session only');
++        validateSnapshot(payload.snapshot);
++        if (!['source', 'live'].includes(payload.mode) || !['system', 'light', 'dark'].includes(payload.appearance) ||
++          typeof payload.assetBase !== 'string' || typeof payload.zoom !== 'number' || !Number.isFinite(payload.zoom) || payload.zoom < 0.25 || payload.zoom > 5 ||
++          !record(payload.selection) || !revision(payload.selection.anchor) || !revision(payload.selection.head) ||
++          payload.selection.anchor > payload.snapshot.text.length || payload.selection.head > payload.snapshot.text.length) throw new Error('Invalid load options');
++        assets = payload.assets === undefined ? Object.create(null) : assetMap(payload.assets);
++        session = createEditor(parent, payload.snapshot, commit => {
++          const message = send('commit', commit); commits.set(message.id, commit.revision); publish(message);
++        }, {
++          resolveImage, liveExtensions: liveFactory,
++          onState: state => { if (session) publish(send('state', state)); },
++          writeClipboard: value => request('clipboardWrite', value),
++          // Return immediately: native asset import may later enqueue applyPatches behind this command.
++          requestAsset: action => { const message = send('assetRequest', { action, requestID: `asset-${sequence + 1}` }); publish(message); },
++          openLink: url => publish(send('openLink', { url })),
++        });
++        session.dispatch({ selection: payload.selection });
++        session.setMode(payload.mode);
++        await session.command('setAppearance', { appearance: payload.appearance });
++        await session.command('setZoom', { zoom: payload.zoom });
++        publish(send('state', session.status()));
++        return send('loaded', { revision: session.snapshot().revision }, id);
++      }
++      case 'ack': {
++        if (!session || !revision(payload.revision)) throw new Error('Invalid acknowledgement');
++        const expected = envelope.replyTo ? commits.get(envelope.replyTo) ?? snapshotReplies.get(envelope.replyTo) : undefined;
++        if (expected === undefined || expected !== payload.revision) throw new Error('Acknowledgement does not match a commit/snapshot');
++        // Older duplicate acks can arrive after a barrier has acknowledged a later revision.
++        if (session.pendingCommits().some(c => c.revision <= payload.revision)) session.acknowledge(payload.revision);
++        for (const [key, rev] of commits) if (rev <= payload.revision) commits.delete(key);
++        for (const [key, rev] of snapshotReplies) if (rev <= payload.revision) snapshotReplies.delete(key);
++        return result(id);
++      }
++      case 'resyncRequired':
++        if (!revision(payload.expected) || !session || payload.expected > session.snapshot().revision) throw new Error('Invalid resync revision');
++        // Native freezes persistence and requests a barrier. JS never adopts its stale mirror.
++        return snapshot(id);
++      case 'barrier':
++        if (!['save', 'export', 'close'].includes(payload.purpose)) throw new Error('Invalid barrier purpose');
++        return snapshot(id);
++      case 'command': {
++        if (!session) throw new Error('Editor not loaded');
++        if (!commands.has(payload.name)) throw new Error('Command not allowlisted');
++        if (payload.name === 'setAssets') {
++          if (!record(payload.args)) throw new Error('setAssets requires {assets}');
++          const updated = assetMap(payload.args.assets); assets = updated;
++          if (liveFactory) session.liveExtensions(liveFactory);
++        } else await session.command(payload.name, payload.args);
++        return result(id);
++      }
++      case 'applyPatches':
++        if (!session || !revision(payload.base) || !Array.isArray(payload.patches) || payload.reason !== 'assets') throw new Error('Invalid native patches');
++        session.apply(payload.base, payload.patches, 'assets'); return result(id);
++      case 'saved':
++        if (!session || !revision(payload.revision) || payload.revision > session.snapshot().revision || typeof payload.contentHash !== 'string') throw new Error('Invalid saved receipt');
++        return result(id); // Receipt never overwrites later edits or clears the sole history.
++      case 'result': case 'error': {
++        const pending = envelope.replyTo ? requests.get(envelope.replyTo) : undefined;
++        if (pending) {
++          if (envelope.type === 'result' && typeof envelope.payload.ok !== 'boolean') throw new Error('Invalid native result');
++          clearTimeout(pending.timer); requests.delete(envelope.replyTo!);
++          if (envelope.type === 'result' && envelope.payload.ok) pending.resolve();
++          else pending.reject(new Error(envelope.type === 'error' ? envelope.payload.message : envelope.payload.error ?? 'Native request failed'));
++        }
++        return result(id);
++      }
++      default: throw new Error('Message not allowlisted');
++    }
++  };
++  const transport: EditorTransport = {
++    get session() { return session; },
++    async receive(input) {
++      let id: string | undefined;
++      try {
++        if (destroyed) throw new Error('Transport destroyed');
++        if (!record(input) || !identifier(input.id)) throw new Error('Invalid message id');
++        id = input.id;
++        if (input.v !== 1 || input.documentID !== identity.documentID || input.sessionID !== identity.sessionID ||
++          !record(input.payload) || typeof input.type !== 'string' || !(NATIVE_MESSAGE_TYPES as readonly string[]).includes(input.type) ||
++          input.replyTo !== undefined && !identifier(input.replyTo)) throw new Error('Invalid envelope version, identity, payload or type');
++        const signature = JSON.stringify(input);
++        if (signature.length > 64 * 1024 * 1024) throw new Error('Message exceeds transport limit');
++        const prior = replies.get(id);
++        if (prior) { if (prior.signature !== signature) throw new Error('Message id reused for different payload'); return prior.promise; }
++        // Register before executing an async mutation; repeated concurrent IDs share one execution.
++        const promise = Promise.resolve().then(() => handle(input as unknown as Envelope)).catch(error =>
++          send('error', { code: 'invalidMessage', message: error instanceof Error ? error.message : String(error) }, id));
++        replies.set(id, { signature, promise });
++        return promise;
++      } catch (error) {
++        return send('error', { code: 'invalidMessage', message: error instanceof Error ? error.message : String(error) }, id);
++      }
++    },
++    installLiveExtensions(factory) {
++      liveFactory = factory; session?.liveExtensions(factory);
++    },
++    destroy() {
++      destroyed = true; session?.destroy();
++      for (const pending of requests.values()) { clearTimeout(pending.timer); pending.reject(new Error('Transport destroyed')); }
++      requests.clear(); replies.clear(); commits.clear(); snapshotReplies.clear();
++    },
++  };
++  // receive exists on the returned object before native observes ready.
++  queueMicrotask(() => { if (!destroyed) publish(send('ready', {})); });
++  return transport;
++}
++
++function bootstrap(): void {
++  const parent = document.querySelector<HTMLElement>('#editor') ?? document.querySelector<HTMLElement>('#app') ?? document.body.appendChild(document.createElement('main'));
++  parent.classList.add('markdown-body');
++  const native = window.webkit?.messageHandlers?.ret;
++  const identity = window.retEditorBootstrap ?? { documentID: 'browser-preview', sessionID: `preview-${Date.now()}` };
++  const transport = createTransport(parent, identity, envelope => {
++    if (native) native.postMessage(envelope);
++    else if (envelope.type === 'clipboardWrite') {
++      // Offline browser fallback uses standard clipboard capability, without HTML conversion on paste.
++      const write = envelope.payload.html && typeof ClipboardItem !== 'undefined'
++        ? navigator.clipboard.write([new ClipboardItem({ 'text/plain': new Blob([envelope.payload.text], { type: 'text/plain' }), 'text/html': new Blob([envelope.payload.html], { type: 'text/html' }) })])
++        : navigator.clipboard?.writeText(envelope.payload.text) ?? Promise.reject(new Error('Clipboard permission unavailable'));
++      void write.then(() => transport.receive({ v: 1, ...identity, id: `browser-${envelope.id}`, replyTo: envelope.id, type: 'result', payload: { ok: true } }),
++        error => transport.receive({ v: 1, ...identity, id: `browser-${envelope.id}`, replyTo: envelope.id, type: 'result', payload: { ok: false, error: String(error) } }));
++    }
++  });
++  window.retEditor = transport;
++  if (!native) void transport.receive({ v: 1, ...identity, id: 'preview-load', type: 'load', payload: {
++    snapshot: { text: '', eols: [], bom: false, revision: 0 }, mode: 'source', selection: { anchor: 0, head: 0 }, assetBase: '', assets: {}, appearance: 'system', zoom: 1,
++  } });
++}
++if (typeof window !== 'undefined' && typeof document !== 'undefined') {
++  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootstrap, { once: true });
++  else bootstrap();
++}
+
+--- /dev/null
++++ web/src/editor/session.ts
+@@ -0,0 +1,330 @@
++import { Annotation, ChangeSet, Compartment, EditorSelection, EditorState, Transaction, type TransactionSpec } from '@codemirror/state';
++import { EditorView, keymap } from '@codemirror/view';
++import { defaultKeymap, undo, redo, undoDepth, redoDepth, isolateHistory } from '@codemirror/commands';
++import { markdown } from '@codemirror/lang-markdown';
++import { search, searchKeymap, openSearchPanel, getSearchQuery, setSearchQuery, SearchQuery } from '@codemirror/search';
++import type { Appearance, Commit, CommitReason, Mode, Patch, Payloads, Range, Revision, Selection, Snapshot, Source } from '../protocol';
++import { applyPatches, encodeSource } from './source';
++import { changedPatches, restoreEOLs, sourceAt, sourceHistory } from './history';
++import { clipboardPayload, pastePayload, type ClipboardPayload, type PasteInput } from './clipboard';
++import { format, insertImages, type FormatOptions } from './commands';
++import { findRanges, nextRange, replacePatches, type FindOptions } from './search';
++import type { LiveExtensionFactory, LiveOptions } from './live-contract';
++
++export interface EditorOptions {
++  liveExtensions?: LiveExtensionFactory;
++  resolveImage?: (destination: string) => string | null;
++  onState?: (state: Payloads['state'] & { readOnly: boolean }) => void;
++  writeClipboard?: (payload: ClipboardPayload) => void | Promise<void>;
++  requestAsset?: (action: 'paste' | 'choose' | 'drop') => void | Promise<void>;
++  openLink?: (url: string) => void;
++}
++export interface EditOptions { selection?: Selection; userEvent?: string }
++const reasonAnnotation = Annotation.define<CommitReason>();
++const nativeAsset = Annotation.define<boolean>();
++const clone = (snapshot: Snapshot): Snapshot => ({ ...snapshot, eols: [...snapshot.eols] });
++const sameSource = (a: Source, b: Source) => a.text === b.text && a.bom === b.bom && a.eols.length === b.eols.length && a.eols.every((e, i) => e === b.eols[i]);
++
++/** Owns one persistent CM history; the view is an optional projection of that state. */
++export class EditorSession {
++  state: EditorState;
++  view?: EditorView;
++  private committed: Snapshot;
++  private committedSelection: Selection = { anchor: 0, head: 0 };
++  private mode: Mode = 'source';
++  private appearance: Appearance = 'system';
++  private zoom = 1;
++  private readonly options: EditorOptions;
++  private readonly emit: (commit: Commit) => void;
++  private readonly modeSlot = new Compartment();
++  private readonly appearanceSlot = new Compartment();
++  private readonly zoomSlot = new Compartment();
++  private readonly readOnlySlot = new Compartment();
++  private readonly liveSlot = new Compartment();
++  private composing = false;
++  private compositionRange: Range | null = null;
++  private composedChanges: ChangeSet | null = null;
++  private afterComposition: (() => void)[] = [];
++  private compositionTimer?: ReturnType<typeof setTimeout>;
++  private destroyed = false;
++  private locked = false;
++  private acknowledged: Revision;
++  private readonly outbox = new Map<Revision, Commit>();
++  private searchOptions: FindOptions = { query: '' };
++
++  constructor(initial: Snapshot, emit: (commit: Commit) => void, options: EditorOptions = {}) {
++    if (!Number.isSafeInteger(initial.revision) || initial.revision < 0) throw new Error('Invalid revision');
++    encodeSource(initial); // Validate the source before constructing any state.
++    this.committed = clone(initial); this.acknowledged = initial.revision;
++    this.emit = emit; this.options = options;
++    this.state = EditorState.create({ doc: initial.text, extensions: [
++      sourceHistory(initial), markdown(), search({ top: true }),
++      this.modeSlot.of(EditorView.editorAttributes.of({ 'data-mode': this.mode })),
++      this.appearanceSlot.of(this.theme()), this.zoomSlot.of([]), this.liveSlot.of([]),
++      this.readOnlySlot.of([EditorState.readOnly.of(false), EditorView.editable.of(true)]),
++      EditorState.transactionFilter.of(tr => this.locked && tr.docChanged && !tr.annotation(nativeAsset) ? [] : tr),
++      keymap.of([
++        { key: 'Mod-z', run: () => this.runHistory('undo') },
++        { key: 'Mod-Shift-z', run: () => this.runHistory('redo') },
++        { key: 'Mod-y', run: () => this.runHistory('redo') },
++        { key: 'Mod-/', run: () => { this.setMode(this.mode === 'live' ? 'source' : 'live'); return true; } },
++        ...[['Mod-b', 'bold'], ['Mod-i', 'italic'], ['Mod-`', 'inlineCode'], ['Mod-k', 'link'], ['Mod-Shift-7', 'orderedList'], ['Mod-Shift-8', 'list']].map(([key, kind]) => ({ key, run: () => this.keyFormat(kind) })),
++        { key: 'Enter', run: () => this.keyFormat('newline') },
++        { key: 'Tab', run: () => this.keyFormat('indent') },
++        { key: 'Shift-Tab', run: () => this.keyFormat('outdent') },
++        ...searchKeymap, ...defaultKeymap,
++      ]),
++      EditorView.domEventHandlers({
++        compositionstart: () => { this.beginComposition(); return false; },
++        compositionend: () => {
++          // CM flushes final DOM mutations in a microtask after this event.
++          clearTimeout(this.compositionTimer);
++          this.compositionTimer = setTimeout(() => { if (!this.destroyed) this.endComposition(); }, 0);
++          return false;
++        },
++        copy: event => {
++          if (this.state.selection.main.empty) return false;
++          const payload = clipboardPayload(this.getSource(), this.selection(), this.mode);
++          event.preventDefault(); event.clipboardData?.setData('text/plain', payload.text);
++          if (this.options.writeClipboard) void Promise.resolve(this.options.writeClipboard(payload)).catch(() => {});
++          return true;
++        },
++        cut: event => {
++          if (this.composing || this.locked) return true;
++          if (this.state.selection.main.empty) return false;
++          const payload = clipboardPayload(this.getSource(), this.selection(), this.mode);
++          event.preventDefault(); event.clipboardData?.setData('text/plain', payload.text);
++          if (this.options.writeClipboard) void Promise.resolve(this.options.writeClipboard(payload)).catch(() => {});
++          const { from, to } = this.state.selection.main;
++          this.edit([{ from, to, insert: '', eols: [] }], { userEvent: 'delete.cut' }); return true;
++        },
++        paste: event => {
++          if (this.composing || this.locked) { event.preventDefault(); return true; }
++          const data = event.clipboardData;
++          if (!data) return false;
++          event.preventDefault();
++          void this.paste({ text: data.types.includes('text/plain') ? data.getData('text/plain') : null,
++            hasImage: Array.from(data.items).some(item => item.type.startsWith('image/')) }).catch(() => {});
++          return true;
++        },
++        drop: event => {
++          if (!event.dataTransfer) return false;
++          if (Array.from(event.dataTransfer.files).some(file => file.type.startsWith('image/'))) {
++            event.preventDefault();
++            if (!this.locked && !this.composing) void this.options.requestAsset?.('drop');
++            return true;
++          }
++          return false;
++        },
++        click: event => {
++          const link = (event.target as Element)?.closest?.('a[href]');
++          if (link) { event.preventDefault(); this.options.openLink?.(link.getAttribute('href')!); return true; }
++          return false;
++        },
++      }),
++      EditorView.lineWrapping,
++    ] });
++    if (options.liveExtensions) this.liveExtensions(options.liveExtensions);
++  }
++  private assertAlive(): void { if (this.destroyed) throw new Error('Editor session destroyed'); }
++  private assertEditable(): void {
++    this.assertAlive(); if (this.locked) throw new Error('Editor is read-only during asset adoption');
++    if (this.composing) throw new Error('Wait for composition to finish');
++  }
++  private keyFormat(kind: string): boolean {
++    if (this.composing || this.locked) return false;
++    format(this, { kind }); return true;
++  }
++  attach(parent: HTMLElement): void {
++    this.assertAlive();
++    if (this.view) throw new Error('View already attached');
++    this.view = new EditorView({ state: this.state, parent,
++      dispatchTransactions: transactions => { for (const tr of transactions) this.dispatch(tr); } });
++  }
++  getSource(): Source { return sourceAt(this.state, this.committed.bom); }
++  snapshot(): Snapshot { return clone(this.committed); }
++  selection(): Selection { const { anchor, head } = this.state.selection.main; return { anchor, head }; }
++  barrier(): Payloads['snapshot'] {
++    return { snapshot: this.snapshot(), selection: { ...(this.composing ? this.committedSelection : this.selection()) }, composing: this.composing };
++  }
++  status(): Payloads['state'] & { readOnly: boolean } {
++    return { revision: this.committed.revision, selection: this.composing ? { ...this.committedSelection } : this.selection(), canUndo: !this.locked && !this.composing && undoDepth(this.state) > 0,
++      canRedo: !this.locked && !this.composing && redoDepth(this.state) > 0, composing: this.composing, mode: this.mode, readOnly: this.locked };
++  }
++  private notify(): void { this.options.onState?.(this.status()); }
++  dispatch(spec: TransactionSpec | Transaction): void {
++    this.assertAlive();
++    const tr = spec instanceof Transaction ? spec : this.state.update(spec);
++    if (tr.startState !== this.state) throw new Error('Stale CodeMirror transaction');
++    if (this.locked && tr.docChanged && !tr.annotation(nativeAsset)) return;
++    if (tr.annotation(Transaction.userEvent)?.startsWith('input.type.compose') && !this.composing) this.beginComposition();
++    const before = this.getSource();
++    const next = sourceAt(tr.state, this.committed.bom);
++    // Check UTF-16 boundaries/metadata even on transactions produced directly by CM.
++    applyPatches(before, changedPatches(before, tr.changes, next));
++    this.state = tr.state; this.view?.update([tr]);
++    if (this.composing) {
++      this.composedChanges = this.composedChanges!.compose(tr.changes);
++      const main = this.state.selection.main;
++      this.compositionRange = { from: Math.min(this.compositionRange!.from, main.from), to: Math.max(main.to, this.compositionRange!.from) };
++    } else {
++      this.publish(tr.changes, tr.annotation(reasonAnnotation) ?? (tr.isUserEvent('undo') ? 'undo' : tr.isUserEvent('redo') ? 'redo' : 'edit'));
++      this.committedSelection = this.selection();
++    }
++    this.notify();
++  }
++  private publish(changes: ChangeSet, reason: CommitReason): void {
++    const after = this.getSource();
++    if (sameSource(this.committed, after)) return;
++    if (this.committed.revision >= Number.MAX_SAFE_INTEGER) throw new Error('Revision exhausted');
++    const commit: Commit = { base: this.committed.revision, revision: this.committed.revision + 1,
++      patches: changedPatches(this.committed, changes, after), selection: this.selection(), reason };
++    this.committed = { ...after, revision: commit.revision };
++    this.outbox.set(commit.revision, structuredClone(commit));
++    this.emit(structuredClone(commit));
++  }
++  edit(patches: readonly Patch[], options: EditOptions = {}): void {
++    this.assertEditable(); this.patchTransaction(patches, 'edit', options);
++  }
++  private patchTransaction(patches: readonly Patch[], reason: CommitReason, options: EditOptions = {}): void {
++    const next = applyPatches(this.getSource(), patches);
++    if (sameSource(this.getSource(), next)) return;
++    this.dispatch({ changes: patches.map(p => ({ from: p.from, to: p.to, insert: p.insert })),
++      effects: restoreEOLs.of(next.eols), selection: options.selection,
++      annotations: [reasonAnnotation.of(reason), isolateHistory.of('full'), nativeAsset.of(reason === 'assets')],
++      userEvent: options.userEvent ?? 'input' });
++  }
++  apply(base: Revision, patches: readonly Patch[], reason: 'assets'): void {
++    this.assertAlive(); if (this.composing) throw new Error('Wait for composition to finish');
++    if (base !== this.committed.revision) throw new Error('Stale asset patch base');
++    if (reason !== 'assets') throw new Error('Invalid patch reason');
++    this.patchTransaction(patches, reason);
++  }
++  acknowledge(revision: Revision): void {
++    if (!Number.isSafeInteger(revision) || revision < this.acknowledged || revision > this.committed.revision) throw new Error('Invalid acknowledgement revision');
++    this.acknowledged = revision;
++    for (const key of this.outbox.keys()) if (key <= revision) this.outbox.delete(key);
++  }
++  pendingCommits(): Commit[] { return [...this.outbox.values()].map(c => structuredClone(c)); }
++  beginComposition(): void {
++    this.assertAlive(); if (this.composing) return;
++    if (this.locked) throw new Error('Editor is read-only');
++    this.committedSelection = this.selection(); this.composing = true;
++    const { from, to } = this.state.selection.main; this.compositionRange = { from, to };
++    this.composedChanges = ChangeSet.empty(this.state.doc.length); this.notify();
++  }
++  endComposition(): void {
++    if (!this.composing) return;
++    this.composing = false; this.compositionRange = null;
++    const changes = this.composedChanges!; this.composedChanges = null;
++    this.publish(changes, 'edit'); this.committedSelection = this.selection(); this.notify();
++    for (const action of this.afterComposition.splice(0)) action();
++  }
++  private runHistory(name: 'undo' | 'redo'): boolean {
++    if (this.composing || this.locked) return false;
++    return (name === 'undo' ? undo : redo)({ state: this.state, dispatch: tr => this.dispatch(tr) });
++  }
++  private theme() {
++    const dark = this.appearance === 'dark' || this.appearance === 'system' && typeof matchMedia !== 'undefined' && matchMedia('(prefers-color-scheme: dark)').matches;
++    return EditorView.theme({ '&': { color: dark ? '#e6edf3' : '#24292f', backgroundColor: dark ? '#0d1117' : '#ffffff', colorScheme: dark ? 'dark' : 'light' }, '.cm-content': { caretColor: dark ? '#e6edf3' : '#24292f' }, '.cm-scroller': { fontFamily: 'inherit' } }, { dark });
++  }
++  setMode(mode: Mode): void {
++    if (mode !== 'source' && mode !== 'live') throw new Error('Invalid mode');
++    if (this.composing) { this.afterComposition.push(() => this.setMode(mode)); return; }
++    this.mode = mode; this.dispatch({ effects: this.modeSlot.reconfigure(EditorView.editorAttributes.of({ 'data-mode': mode })), annotations: Transaction.addToHistory.of(false) });
++  }
++  liveExtensions(factory: LiveExtensionFactory): void {
++    if (this.composing) { this.afterComposition.push(() => this.liveExtensions(factory)); return; }
++    const options: LiveOptions = { getSource: () => this.getSource(), apply: (patches, options) => this.edit(patches, options),
++      resolveImage: destination => this.options.resolveImage?.(destination) ?? null, getMode: () => this.mode,
++      composition: () => ({ composing: this.composing, range: this.compositionRange ? { ...this.compositionRange } : null }) };
++    this.dispatch({ effects: this.liveSlot.reconfigure(factory(options)), annotations: Transaction.addToHistory.of(false) });
++  }
++  async paste(input: PasteInput): Promise<void> {
++    this.assertEditable(); const payload = pastePayload(input);
++    if (payload.kind === 'image') { await this.options.requestAsset?.('paste'); return; }
++    if (payload.kind === 'none') return;
++    const { from, to } = this.state.selection.main, { text, eols } = payload.source;
++    this.edit([{ from, to, insert: text, eols }], { selection: { anchor: from + text.length, head: from + text.length }, userEvent: 'input.paste' });
++  }
++  async command(name: string, args?: unknown): Promise<void> {
++    this.assertAlive();
++    const object = args && typeof args === 'object' ? args as Record<string, unknown> : {};
++    if (name === 'setReadOnly') {
++      if (typeof object.value !== 'boolean') throw new Error('setReadOnly requires boolean value');
++      if (object.value && this.composing) throw new Error('Cannot lock during composition');
++      this.locked = object.value;
++      this.dispatch({ effects: this.readOnlySlot.reconfigure([EditorState.readOnly.of(this.locked), EditorView.editable.of(!this.locked)]), annotations: Transaction.addToHistory.of(false) }); return;
++    }
++    if (['copySource', 'copyPlain', 'copyRich'].includes(name)) {
++      await this.options.writeClipboard?.(clipboardPayload(this.getSource(), this.selection(), this.mode,
++        name === 'copyRich' ? 'rich' : name === 'copyPlain' ? 'plain' : 'source', { resolveImage: this.options.resolveImage })); return;
++    }
++    if (this.composing) await new Promise<void>(resolve => this.afterComposition.push(resolve));
++    this.assertAlive();
++    switch (name) {
++      case 'undo': case 'redo': this.runHistory(name); return;
++      case 'setMode': this.setMode((typeof args === 'string' ? args : object.mode) as Mode); return;
++      case 'setAppearance': {
++        const appearance = typeof args === 'string' ? args : object.appearance;
++        if (!['system', 'light', 'dark'].includes(String(appearance))) throw new Error('Invalid appearance');
++        this.appearance = appearance as Appearance;
++        this.dispatch({ effects: this.appearanceSlot.reconfigure(this.theme()), annotations: Transaction.addToHistory.of(false) }); return;
++      }
++      case 'setZoom': {
++        const zoom = typeof args === 'number' ? args : object.zoom;
++        if (typeof zoom !== 'number' || !Number.isFinite(zoom) || zoom < 0.25 || zoom > 5) throw new Error('Invalid zoom');
++        this.zoom = zoom;
++        this.dispatch({ effects: this.zoomSlot.reconfigure(EditorView.theme({ '&': { fontSize: `${16 * zoom}px` } })), annotations: Transaction.addToHistory.of(false) }); return;
++      }
++      case 'format': this.assertEditable(); format(this, (typeof args === 'string' ? { kind: args } : object) as FormatOptions); return;
++      case 'insertImage': {
++        this.assertEditable();
++        if (object.destinations !== undefined || object.destination !== undefined) {
++          const destinations = object.destinations ?? [object.destination];
++          if (!Array.isArray(destinations)) throw new Error('Image destinations must be an array');
++          insertImages(this, destinations, object.alt === undefined ? '' : object.alt as string);
++        } else await this.options.requestAsset?.('choose');
++        return;
++      }
++      case 'revealRange': {
++        const range = (object.range ?? object) as Range;
++        if (!Number.isSafeInteger(range.from) || !Number.isSafeInteger(range.to) || range.from < 0 || range.to < range.from || range.to > this.state.doc.length) throw new Error('Invalid reveal range');
++        // Source selection itself reveals delimiters in the live extension.
++        this.dispatch({ selection: EditorSelection.single(range.from, range.to), effects: EditorView.scrollIntoView(range.from, { y: 'center' }) }); return;
++      }
++      case 'find': case 'replace': case 'replaceAll': {
++        if (!args && this.view) { openSearchPanel(this.view); return; }
++        const panel = getSearchQuery(this.state);
++        const query = typeof object.query === 'string' ? object.query : this.searchOptions.query || panel.search;
++        const backwards = typeof object.backwards === 'boolean' ? object.backwards : object.previous === true;
++        this.searchOptions = { ...this.searchOptions, query, replacement: this.searchOptions.replacement ?? panel.replace, ...object, backwards } as FindOptions;
++        if (typeof this.searchOptions.query !== 'string') throw new Error('Find requires query');
++        this.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: this.searchOptions.query, replace: this.searchOptions.replacement, caseSensitive: this.searchOptions.caseSensitive, regexp: this.searchOptions.regexp })) });
++        const ranges = findRanges(this.getSource().text, this.searchOptions);
++        if (name === 'replaceAll') { this.assertEditable(); this.edit(replacePatches(this.getSource(), this.searchOptions, ranges)); return; }
++        const selection = this.state.selection.main;
++        if (name === 'replace') {
++          this.assertEditable(); const selected = ranges.find(r => r.from === selection.from && r.to === selection.to);
++          if (selected) { this.edit(replacePatches(this.getSource(), this.searchOptions, [selected])); return; }
++        }
++        const range = nextRange(ranges, this.searchOptions.backwards ? selection.from : selection.to, this.searchOptions.backwards);
++        if (range) await this.command('revealRange', range); return;
++      }
++      default: throw new Error(`Unknown command: ${name}`);
++    }
++  }
++  destroy(): void {
++    if (this.destroyed) return;
++    clearTimeout(this.compositionTimer); this.view?.destroy(); this.view = undefined; this.destroyed = true;
++    for (const action of this.afterComposition.splice(0)) action();
++  }
++}
++export function createSession(initial: Snapshot, emit: (commit: Commit) => void, options?: EditorOptions): EditorSession {
++  return new EditorSession(initial, emit, options);
++}
++export function createEditor(parent: HTMLElement, initial: Snapshot, emit: (commit: Commit) => void, options?: EditorOptions): EditorSession {
++  const session = createSession(initial, emit, options); session.attach(parent); return session;
++}
++/** Task 4 can inject/reconfigure live decorations without writing the session. */
++export function liveExtensions(session: EditorSession, factory: LiveExtensionFactory): void { session.liveExtensions(factory); }
+
+--- /dev/null
++++ web/src/editor/history.ts
+@@ -0,0 +1,59 @@
++import { StateEffect, StateField, EditorState, type Extension, type ChangeSet } from '@codemirror/state';
++import { history, invertedEffects } from '@codemirror/commands';
++import type { EOL, Patch, Source } from '../protocol';
++import { applyPatches } from './source';
++
++/** Arrays are immutable snapshots; inverses travel with CM's own history event. */
++export const restoreEOLs = StateEffect.define<readonly EOL[]>();
++export const eolField = StateField.define<readonly EOL[]>({
++  create: () => [],
++  update(value, tr) {
++    for (const effect of tr.effects) if (effect.is(restoreEOLs)) value = effect.value;
++    return value;
++  },
++});
++export const newlineCount = (text: string) => (text.match(/\n/g) ?? []).length;
++export function inheritedEOL(source: Source, position: number): EOL {
++  const index = newlineCount(source.text.slice(0, position));
++  return source.eols[index] ?? source.eols[index - 1] ?? '\n';
++}
++export function sourceAt(state: EditorState, bom: boolean): Source {
++  return { text: state.doc.toString(), eols: [...state.field(eolField)], bom };
++}
++export function changedPatches(before: Source, changes: ChangeSet, after: Source): Patch[] {
++  const patches: Patch[] = [];
++  let cursor = 0, eolIndex = 0;
++  changes.iterChanges((from, to, newFrom, newTo) => {
++    eolIndex += newlineCount(after.text.slice(cursor, newFrom));
++    const insert = after.text.slice(newFrom, newTo), count = newlineCount(insert);
++    patches.push({ from, to, insert, eols: after.eols.slice(eolIndex, eolIndex + count) });
++    cursor = newTo; eolIndex += count;
++  });
++  // An EOL-only replacement is still a content change, even if CM elides text changes.
++  if (!patches.length) {
++    let index = 0;
++    for (let p = 0; p < before.text.length; p++) if (before.text[p] === '\n') {
++      if (before.eols[index] !== after.eols[index]) patches.push({ from: p, to: p + 1, insert: '\n', eols: [after.eols[index]] });
++      index++;
++    }
++  }
++  return patches;
++}
++export function sourceHistory(initial: Source): Extension {
++  return [
++    eolField.init(() => [...initial.eols]),
++    EditorState.transactionExtender.of(tr => {
++      if (!tr.docChanged || tr.effects.some(e => e.is(restoreEOLs))) return null;
++      const before = sourceAt(tr.startState, initial.bom);
++      const patches: Patch[] = [];
++      tr.changes.iterChanges((from, to, _a, _b, inserted) => {
++        const insert = inserted.toString();
++        patches.push({ from, to, insert, eols: Array<EOL>(newlineCount(insert)).fill(inheritedEOL(before, from)) });
++      });
++      return { effects: restoreEOLs.of(applyPatches(before, patches).eols) };
++    }),
++    invertedEffects.of(tr => tr.docChanged || tr.effects.some(e => e.is(restoreEOLs))
++      ? [restoreEOLs.of([...tr.startState.field(eolField)])] : []),
++    history(),
++  ];
++}
+
+--- /dev/null
++++ web/src/editor/commands.ts
+@@ -0,0 +1,88 @@
++import type { EditorState } from '@codemirror/state';
++import type { Patch, Selection, Source } from '../protocol';
++import { inheritedEOL, newlineCount } from './history';
++
++export interface CommandTarget {
++  readonly state: EditorState;
++  getSource(): Source;
++  selection(): Selection;
++  edit(patches: readonly Patch[], options?: { selection?: Selection; userEvent?: string }): void;
++}
++export type FormatOptions = { kind: string; level?: number; url?: string; marker?: string; language?: string };
++function patch(source: Source, from: number, to: number, insert: string): Patch {
++  return { from, to, insert, eols: Array(newlineCount(insert)).fill(inheritedEOL(source, from)) };
++}
++export function format(target: CommandTarget, options: FormatOptions): void {
++  const source = target.getSource(), selection = target.selection();
++  const from = Math.min(selection.anchor, selection.head), to = Math.max(selection.anchor, selection.head);
++  const text = source.text.slice(from, to), line = target.state.doc.lineAt(from);
++  const kind = options.kind;
++  const wrap = (open: string, close = open) => {
++    // Toggle existing delimiters without rewriting any surrounding source.
++    if (source.text.slice(Math.max(0, from - open.length), from) === open && source.text.slice(to, to + close.length) === close) {
++      target.edit([patch(source, from - open.length, from, ''), patch(source, to, to + close.length, '')], { selection: { anchor: from - open.length, head: to - open.length } });
++    } else target.edit([patch(source, from, from, open), patch(source, to, to, close)], { selection: { anchor: from + open.length, head: to + open.length } });
++  };
++  if (kind === 'bold') return wrap('**');
++  if (kind === 'italic') return wrap('*');
++  if (kind === 'strike' || kind === 'strikethrough') return wrap('~~');
++  if (kind === 'code' || kind === 'inlineCode') {
++    const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map(s => s.length));
++    const fence = '`'.repeat(longest + 1), pad = text.startsWith('`') || text.endsWith('`') ? ' ' : '';
++    return wrap(fence + pad, pad + fence);
++  }
++  if (kind === 'link') return wrap('[', `](${options.url ?? 'https://' })`);
++  if (kind === 'codeBlock') {
++    const longest = Math.max(2, ...(text.match(/`+/g) ?? []).map(s => s.length));
++    const fence = '`'.repeat(longest + 1);
++    return wrap(`${fence}${options.language ?? ''}\n`, `\n${fence}`);
++  }
++  if (kind === 'newline') {
++    const prefix = /^(\s*)((?:[-+*]|\d+[.)])\s+)(\[[ xX]\]\s+)?/.exec(line.text);
++    if (prefix && from === to && from >= line.from + prefix[0].length) {
++      if (line.text.slice(prefix[0].length).trim() === '') {
++        target.edit([patch(source, line.from, line.to, '')], { selection: { anchor: line.from, head: line.from } }); return;
++      }
++      let marker = prefix[2];
++      marker = marker.replace(/^\d+/, n => String(Number(n) + 1));
++      const insert = '\n' + prefix[1] + marker + (prefix[3] ? '[ ] ' : '');
++      const end = from + insert.length;
++      target.edit([patch(source, from, to, insert)], { selection: { anchor: end, head: end }, userEvent: 'input' }); return;
++    }
++    const insert = '\n' + (/^[\t ]*/.exec(line.text)?.[0] ?? '');
++    target.edit([patch(source, from, to, insert)], { selection: { anchor: from + insert.length, head: from + insert.length } }); return;
++  }
++  const last = target.state.doc.lineAt(to > from ? to - 1 : to);
++  const patches: Patch[] = [];
++  for (let n = line.number; n <= last.number; n++) {
++    const l = target.state.doc.line(n);
++    if (kind === 'heading') {
++      const level = options.level ?? 1;
++      if (!Number.isInteger(level) || level < 1 || level > 6) throw new Error('Heading level must be 1–6');
++      const previous = /^(#{1,6})[\t ]+/.exec(l.text);
++      patches.push(patch(source, l.from, l.from + (previous?.[0].length ?? 0), '#'.repeat(level) + ' '));
++    } else if (kind === 'quote') patches.push(patch(source, l.from, l.from, '> '));
++    else if (kind === 'list' || kind === 'bulletList' || kind === 'unorderedList' || kind === 'orderedList' || kind === 'taskList') {
++      const marker = kind === 'orderedList' ? `${n - line.number + 1}.` : options.marker ?? '-';
++      if (!/^[-+*]$|^\d+[.)]$/.test(marker)) throw new Error('Invalid list marker');
++      const indent = /^[\t ]*/.exec(l.text)![0].length;
++      patches.push(patch(source, l.from + indent, l.from + indent, marker + (kind === 'taskList' ? ' [ ] ' : ' ')));
++    } else if (kind === 'indent') patches.push(patch(source, l.from, l.from, '  '));
++    else if (kind === 'outdent') patches.push(patch(source, l.from, l.from + (/^(?: {1,2}|\t)/.exec(l.text)?.[0].length ?? 0), ''));
++    else throw new Error(`Unknown format: ${kind}`);
++  }
++  target.edit(patches);
++}
++
++
++/** Native has already imported these images and installed their capabilities. */
++export function insertImages(target: CommandTarget, destinations: readonly string[], alt = ''): void {
++  if (!destinations.length || destinations.some(d => typeof d !== 'string' || !d || /^(?:[a-z][\w+.-]*:|\/\/)/i.test(d))) throw new Error('Image destinations must be local relative paths');
++  if (typeof alt !== 'string') throw new Error('Image alt must be text');
++  const label = alt.replace(/[\\\[\]]/g, '\\$&').replace(/[\r\n]/g, ' ');
++  const escapeDestination = (destination: string) => destination.replace(/[\u0000-\u0020<>"\\?#]/g, character => encodeURIComponent(character));
++  const insert = destinations.map(destination => `![${label}](<${escapeDestination(destination)}>)`).join('\n');
++  const source = target.getSource(), selection = target.selection();
++  const from = Math.min(selection.anchor, selection.head), to = Math.max(selection.anchor, selection.head);
++  target.edit([patch(source, from, to, insert)], { selection: { anchor: from + insert.length, head: from + insert.length } });
++}
+
+--- /dev/null
++++ web/src/editor/clipboard.ts
+@@ -0,0 +1,63 @@
++import { markdownLanguage } from '@codemirror/lang-markdown';
++import type { Mode, Range, Selection, Source } from '../protocol';
++import { decodeSource, encodeSource } from './source';
++import { newlineCount } from './history';
++import { plainText, richClipboard, type RenderOptions } from '../render/markdown';
++
++export type ClipboardPayload = { text: string; html?: string };
++export type PasteInput = { text: string | null; html?: string; hasImage?: boolean };
++export interface InlineSelectionSpan extends Range { contentFrom: number; contentTo: number }
++
++function inlineSpans(text: string): InlineSelectionSpan[] {
++  const spans: InlineSelectionSpan[] = [];
++  markdownLanguage.parser.parse(text).iterate({ enter(node) {
++    if (!['StrongEmphasis', 'Emphasis', 'InlineCode', 'Strikethrough', 'Link', 'Image'].includes(node.name)) return;
++    const children = node.node;
++    const first = children.firstChild;
++    if (!first) return;
++    if (node.name === 'Link' || node.name === 'Image') {
++      let mark = first.nextSibling;
++      while (mark && mark.name !== 'LinkMark') mark = mark.nextSibling;
++      if (mark) spans.push({ from: node.from, to: node.to, contentFrom: first.to, contentTo: mark.from });
++    } else {
++      const last = children.lastChild;
++      if (last) spans.push({ from: node.from, to: node.to, contentFrom: first.to, contentTo: last.from });
++    }
++  } });
++  return spans;
++}
++export function selectedRange(source: Source, selection: Selection, mode: Mode, spans = inlineSpans(source.text)): Range {
++  let from = Math.min(selection.anchor, selection.head), to = Math.max(selection.anchor, selection.head);
++  if (mode === 'live' && from !== to) {
++    // Revisit outer spans after nested contents expand to their complete source.
++    let expanded: boolean;
++    do {
++      expanded = false;
++      for (const span of spans) if (from <= span.contentFrom && to >= span.contentTo && from < span.to && to > span.from) {
++        const a = Math.min(from, span.from), b = Math.max(to, span.to);
++        if (a !== from || b !== to) { from = a; to = b; expanded = true; }
++      }
++    } while (expanded);
++  }
++  return { from, to };
++}
++export function sourceSelection(source: Source, selection: Selection, mode: Mode): string {
++  const { from, to } = selectedRange(source, selection, mode);
++  const text = source.text.slice(from, to), first = newlineCount(source.text.slice(0, from));
++  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(encodeSource({ text, eols: source.eols.slice(first, first + newlineCount(text)), bom: false }));
++}
++export function clipboardPayload(source: Source, selection: Selection, mode: Mode, format: 'source' | 'plain' | 'rich' = 'source', options?: RenderOptions): ClipboardPayload {
++  const selected = sourceSelection(source, selection, mode);
++  if (format === 'source') return { text: selected };
++  const normalized = selected.replace(/\r\n|\r/g, '\n');
++  return format === 'plain' ? { text: plainText(normalized) } : richClipboard(normalized, options);
++}
++export function pastePayload(input: PasteInput): { kind: 'text'; source: Source } | { kind: 'image' } | { kind: 'none' } {
++  if (input.text !== null && input.text !== '') {
++    const source = decodeSource(new TextEncoder().encode(input.text));
++    // A clipboard-leading U+FEFF is content, not a file-level BOM.
++    if (source.bom) { source.text = '\uFEFF' + source.text; source.bom = false; }
++    return { kind: 'text', source };
++  }
++  return input.hasImage ? { kind: 'image' } : { kind: 'none' };
++}
+
+--- /dev/null
++++ web/src/editor/search.ts
+@@ -0,0 +1,20 @@
++import type { Range, Source, Patch } from '../protocol';
++import { decodeSource } from './source';
++export interface FindOptions { query: string; caseSensitive?: boolean; regexp?: boolean; backwards?: boolean; replacement?: string }
++export function findRanges(text: string, options: FindOptions): Range[] {
++  if (!options.query) return [];
++  const pattern = options.regexp ? options.query : options.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
++  const re = new RegExp(pattern, options.caseSensitive ? 'gu' : 'giu');
++  const ranges: Range[] = [];
++  for (const match of text.matchAll(re)) if (match[0].length) ranges.push({ from: match.index, to: match.index + match[0].length });
++  return ranges;
++}
++export function replacePatches(source: Source, options: FindOptions, ranges = findRanges(source.text, options)): Patch[] {
++  const replacement = decodeSource(new TextEncoder().encode(options.replacement ?? ''));
++  if (replacement.bom) replacement.text = '\uFEFF' + replacement.text;
++  return ranges.map(range => ({ ...range, insert: replacement.text, eols: [...replacement.eols] }));
++}
++export function nextRange(ranges: Range[], position: number, backwards = false): Range | undefined {
++  return backwards ? [...ranges].reverse().find(r => r.to <= position) ?? ranges.at(-1)
++    : ranges.find(r => r.from >= position) ?? ranges[0];
++}
+
+--- /dev/null
++++ web/src/editor/live-contract.ts
+@@ -0,0 +1,15 @@
++import type { Extension } from '@codemirror/state';
++import type { Mode, Patch, Range, Selection, Source } from '../protocol';
++
++/** Stable adapter: live UI projects edits into the root session's sole history. */
++export interface LiveOptions {
++  /** Current root source (includes provisional preedit while composing). */
++  getSource(): Source;
++  /** One atomic root transaction; blocked while composing. */
++  apply(patches: readonly Patch[], options?: { selection?: Selection; userEvent?: string }): void;
++  /** Capability URLs only; null means an offline placeholder. */
++  resolveImage(destination: string): string | null;
++  getMode(): Mode;
++  composition(): { composing: boolean; range: Range | null };
++}
++export type LiveExtensionFactory = (options: LiveOptions) => Extension;
+
+--- /dev/null
++++ web/test/session.test.ts
+@@ -0,0 +1,151 @@
++import { describe, expect, it } from 'vitest';
++import { EditorSelection, Transaction } from '@codemirror/state';
++import { undoDepth } from '@codemirror/commands';
++import { createSession } from '../src/editor/session';
++import { decodeSource, encodeSource, applyPatches } from '../src/editor/source';
++import type { Commit, Snapshot } from '../src/protocol';
++
++const initial = (raw: string): Snapshot => ({ ...decodeSource(new TextEncoder().encode(raw)), revision: 0 });
++const bytes = (s: Snapshot) => new TextDecoder("utf-8", { ignoreBOM: true }).decode(encodeSource(s));
++
++describe('one source-first CodeMirror session', () => {
++  it('alternates modes and inverts mixed EOL metadata with the sole CM history', async () => {
++    const original = initial('\uFEFFa\r\nb\rc\n末尾');
++    const commits: Commit[] = [];
++    const s = createSession(original, c => commits.push(c));
++    s.edit([{ from: 1, to: 3, insert: '\n换\n', eols: ['\r', '\r\n'] }]);
++    s.setMode('live');
++    s.edit([{ from: s.state.doc.length, to: s.state.doc.length, insert: '\n尾', eols: ['\r'] }]);
++    s.setMode('source');
++    await s.command('undo'); await s.command('undo');
++    expect(encodeSource(s.snapshot())).toEqual(encodeSource(original));
++    expect(commits.map(c => [c.base, c.revision, c.reason])).toEqual([[0, 1, 'edit'], [1, 2, 'edit'], [2, 3, 'undo'], [3, 4, 'undo']]);
++    let mirror = original;
++    for (const c of commits) mirror = { ...applyPatches(mirror, c.patches), revision: c.revision };
++    expect(mirror).toEqual(s.snapshot());
++    await s.command('redo'); await s.command('redo');
++    expect(bytes(s.snapshot())).toBe('\uFEFFa\r换\r\n\rc\n末尾\r尾');
++  });
++
++  it('reconfigures mode, appearance and zoom without history, content, or selection changes', async () => {
++    const commits: Commit[] = [];
++    const s = createSession(initial('**text**'), c => commits.push(c));
++    s.dispatch({ selection: EditorSelection.single(2, 6) });
++    const doc = s.state.doc;
++    s.setMode('live'); await s.command('setAppearance', { appearance: 'dark' });
++    await s.command('setZoom', { zoom: 1.5 }); s.setMode('source');
++    expect(s.state.doc).toBe(doc);
++    expect(s.selection()).toEqual({ anchor: 2, head: 6 });
++    expect(undoDepth(s.state)).toBe(0); expect(commits).toEqual([]);
++  });
++
++  it('finds hidden syntax and replaces all as one undo event', async () => {
++    const s = createSession(initial('**a**\r\n**b**'), () => {});
++    s.setMode('live');
++    await s.command('find', { query: '**' });
++    expect(s.selection()).toEqual({ anchor: 0, head: 2 });
++    await s.command('replaceAll', { query: '**', replacement: '__' });
++    expect(s.snapshot().text).toBe('__a__\n__b__'); expect(undoDepth(s.state)).toBe(1);
++    await s.command('undo'); expect(bytes(s.snapshot())).toBe('**a**\r\n**b**');
++  });
++
++  it.each(['-', '+', '*'])('continues %s list prefix and containing-line EOL, then exits an empty item', async marker => {
++    const s = createSession(initial(`  ${marker} item\r\nlast`), () => {});
++    s.dispatch({ selection: { anchor: 8 } });
++    await s.command('format', { kind: 'newline' });
++    expect(bytes(s.snapshot())).toBe(`  ${marker} item\r\n  ${marker} \r\nlast`);
++    await s.command('format', { kind: 'newline' });
++    expect(bytes(s.snapshot())).toBe(`  ${marker} item\r\n\r\nlast`);
++  });
++
++  it('inherits typed newline terminators and restores them on undo/redo after CM typing grouping', async () => {
++    const s = createSession(initial('a\r\nb\rc'), () => {});
++    s.dispatch({ changes: { from: 1, insert: '\n' }, annotations: Transaction.userEvent.of('input.type') });
++    s.dispatch({ changes: { from: 2, insert: '\n' }, annotations: Transaction.userEvent.of('input.type') });
++    expect(s.snapshot().eols).toEqual(['\r\n', '\r\n', '\r\n', '\r']);
++    await s.command('undo'); expect(bytes(s.snapshot())).toBe('a\r\nb\rc');
++    await s.command('redo'); expect(s.snapshot().eols).toEqual(['\r\n', '\r\n', '\r\n', '\r']);
++  });
++
++  it('barriers retain last committed content and selection while composition changes provisional text', async () => {
++    const commits: Commit[] = [];
++    const s = createSession(initial('a\r\nb'), c => commits.push(c));
++    s.dispatch({ selection: { anchor: 1 } }); s.beginComposition();
++    s.dispatch({ changes: { from: 1, insert: 'n' }, selection: { anchor: 2 }, userEvent: 'input.type.compose.start' });
++    s.dispatch({ changes: { from: 1, to: 2, insert: '你' }, selection: { anchor: 2 }, userEvent: 'input.type.compose' });
++    expect(s.state.doc.toString()).toBe('a你\nb');
++    expect(s.barrier()).toEqual({ snapshot: initial('a\r\nb'), selection: { anchor: 1, head: 1 }, composing: true });
++    expect(commits).toEqual([]);
++    expect(() => s.apply(0, [], 'assets')).toThrow(/compos/i);
++    s.endComposition();
++    expect(commits).toHaveLength(1); expect(commits[0].patches).toEqual([{ from: 1, to: 1, insert: '你', eols: [] }]);
++    await s.command('undo'); expect(bytes(s.snapshot())).toBe('a\r\nb');
++  });
++
++  it('ignores cancelled preedit and rejects stale asset transactions without losing text', () => {
++    const commits: Commit[] = []; const s = createSession(initial('a'), c => commits.push(c));
++    s.beginComposition();
++    s.dispatch({ changes: { from: 1, insert: 'n' }, userEvent: 'input.type.compose.start' });
++    s.dispatch({ changes: { from: 1, to: 2 }, userEvent: 'input.type.compose' });
++    s.endComposition(); expect(commits).toEqual([]); expect(s.snapshot()).toEqual(initial('a'));
++    s.apply(0, [{ from: 1, to: 1, insert: '!', eols: [] }], 'assets');
++    expect(() => s.apply(0, [{ from: 0, to: 0, insert: '?', eols: [] }], 'assets')).toThrow(/base|stale/i);
++    expect(s.snapshot().text).toBe('a!');
++  });
++
++  it('protects source snapshots against caller mutation and counts EOL-only changes as commits', async () => {
++    const s = createSession(initial('a\r\nb'), () => {});
++    const leaked = s.snapshot(); leaked.eols[0] = '\r';
++    expect(s.snapshot().eols).toEqual(['\r\n']);
++    s.edit([{ from: 1, to: 2, insert: '\n', eols: ['\r'] }]);
++    expect(s.snapshot().revision).toBe(1);
++    await s.command('undo'); expect(s.snapshot().eols).toEqual(['\r\n']);
++  });
++});
++
++it('locks user edits for Save As while allowing atomic native asset adoption, then unlocks', async () => {
++  const s = createSession(initial('![a](old.assets/a.png)'), () => {});
++  await s.command('setReadOnly', { value: true });
++  expect(() => s.edit([{ from: 0, to: 0, insert: 'x', eols: [] }])).toThrow(/read.only|lock/i);
++  s.dispatch({ changes: { from: 0, insert: 'user' }, userEvent: 'input.type' });
++  expect(s.snapshot().text).toBe('![a](old.assets/a.png)');
++  await expect(s.paste({ text: 'blocked' })).rejects.toThrow(/read.only|lock/i);
++  s.apply(0, [{ from: 5, to: 8, insert: 'new', eols: [] }], 'assets');
++  expect(s.snapshot().text).toBe('![a](new.assets/a.png)');
++  await s.command('setReadOnly', { value: false });
++  s.edit([{ from: 0, to: 0, insert: 'ok ', eols: [] }]);
++  expect(s.snapshot().text).toBe('ok ![a](new.assets/a.png)');
++  s.beginComposition();
++  await expect(s.command('setReadOnly', { value: true })).rejects.toThrow(/compos/i);
++  s.endComposition();
++});
++
++it('formatting a multiline selection inserts delimiters without changing its original terminators', async () => {
++  const s = createSession(initial('a\r\nb\rc\n尾'), () => {});
++  s.dispatch({ selection: { anchor: 0, head: s.state.doc.length } });
++  await s.command('format', { kind: 'bold' });
++  expect(bytes(s.snapshot())).toBe('**a\r\nb\rc\n尾**');
++  expect(s.snapshot().eols).toEqual(['\r\n', '\r', '\n']);
++  await s.command('undo'); expect(bytes(s.snapshot())).toBe('a\r\nb\rc\n尾');
++});
++
++it('retains committed edits until acknowledged, including undo revisions', async () => {
++  const s = createSession(initial('a'), () => {});
++  s.edit([{ from: 1, to: 1, insert: 'b', eols: [] }]);
++  await s.command('undo');
++  expect(s.pendingCommits().map(c => c.revision)).toEqual([1, 2]);
++  s.acknowledge(1); expect(s.pendingCommits().map(c => c.revision)).toEqual([2]);
++  expect(() => s.acknowledge(3)).toThrow(/acknowledge/i);
++  s.acknowledge(2); expect(s.pendingCommits()).toEqual([]);
++});
++
++it('inserts native plural image destinations as one atomic source edit with inherited EOLs', async () => {
++  const s = createSession(initial('before\r\nafter'), () => {});
++  s.dispatch({ selection: { anchor: 7, head: 12 } });
++  await s.command('insertImage', { destinations: ['报告.assets/图 1.png', '../other(2).png'], destination: 'ignored.png', alt: '' });
++  expect(bytes(s.snapshot())).toBe('before\r\n![](<报告.assets/图%201.png>)\r\n![](<../other(2).png>)');
++  expect(undoDepth(s.state)).toBe(1);
++  await s.command('undo'); expect(bytes(s.snapshot())).toBe('before\r\nafter');
++  await s.command('insertImage', { destination: 'one.png', alt: 'a[b]' });
++  expect(s.snapshot().text).toBe('before\n![a\\[b\\]](<one.png>)');
++});
+
+--- /dev/null
++++ web/test/clipboard.test.ts
+@@ -0,0 +1,41 @@
++import { describe, it, expect } from 'vitest';
++import { clipboardPayload, pastePayload, sourceSelection } from '../src/editor/clipboard';
++import { createSession } from '../src/editor/session';
++import { decodeSource } from '../src/editor/source';
++
++const source = (raw: string) => decodeSource(new TextEncoder().encode(raw));
++describe('source-based clipboard', () => {
++  it('expands full live inline contents to hidden markers but source copy remains exact', () => {
++    const s = source('before **bold** after');
++    expect(sourceSelection(s, { anchor: 9, head: 13 }, 'live')).toBe('**bold**');
++    expect(sourceSelection(s, { anchor: 9, head: 13 }, 'source')).toBe('bold');
++    expect(sourceSelection(s, { anchor: 10, head: 12 }, 'live')).toBe('ol');
++    expect(sourceSelection(source('[label](https://example.com)'), { anchor: 1, head: 6 }, 'live')).toBe('[label](https://example.com)');
++  });
++  it('preserves selected raw EOLs and never includes the file BOM', () => {
++    expect(sourceSelection(source('\uFEFFa\r\nb\rc'), { anchor: 0, head: 5 }, 'source')).toBe('a\r\nb\rc');
++  });
++  it('copies source by default, plain visible text, or HTML and a text fallback', () => {
++    const s = source('**bold**'); const selection = { anchor: 0, head: 8 };
++    expect(clipboardPayload(s, selection, 'source', 'source')).toEqual({ text: '**bold**' });
++    expect(clipboardPayload(s, selection, 'source', 'plain')).toEqual({ text: 'bold' });
++    const rich = clipboardPayload(s, selection, 'source', 'rich');
++    expect(rich.text).toBe('bold'); expect(rich.html).toContain('<strong>bold</strong>');
++  });
++  it('prefers raw plain text over rich HTML and routes image-only paste to native', () => {
++    expect(pastePayload({ text: '**a**\r\nb', html: '<b>other</b>', hasImage: true })).toEqual({ kind: 'text', source: source('**a**\r\nb') });
++    expect(pastePayload({ text: null, html: '<script>bad()</script>', hasImage: false })).toEqual({ kind: 'none' });
++    expect(pastePayload({ text: null, hasImage: true })).toEqual({ kind: 'image' });
++  });
++  it('uses real session copy and paste commands without copy history, and one paste undo', async () => {
++    const writes: { text: string; html?: string }[] = [];
++    const s = createSession({ ...source('**bold**'), revision: 0 }, () => {}, { writeClipboard: p => { writes.push(p); } });
++    s.dispatch({ selection: { anchor: 0, head: 8 } });
++    await s.command('copySource'); await s.command('copyPlain'); await s.command('copyRich');
++    expect(writes.map(p => p.text)).toEqual(['**bold**', 'bold', 'bold']); expect(writes[2].html).toContain('<strong>');
++    expect(s.snapshot().revision).toBe(0);
++    await s.paste({ text: 'raw\r\n**md**', html: '<h1>ignored</h1>' });
++    expect(s.snapshot()).toMatchObject({ text: 'raw\n**md**', eols: ['\r\n'], revision: 1 });
++    await s.command('undo'); expect(s.snapshot().text).toBe('**bold**');
++  });
++});
+
+--- /dev/null
++++ web/test/transport.test.ts
+@@ -0,0 +1,98 @@
++// @vitest-environment jsdom
++import { afterEach, describe, expect, it } from 'vitest';
++import { createTransport } from '../src/main';
++import type { Envelope, Snapshot } from '../src/protocol';
++const identity = { documentID: 'doc', sessionID: 'session' };
++const initial: Snapshot = { text: 'a\nb', eols: ['\r\n'], bom: true, revision: 0 };
++function harness() {
++  const posts: Envelope[] = [];
++  const parent = document.createElement('main'); document.body.append(parent);
++  const transport = createTransport(parent, identity, e => posts.push(e));
++  let id = 0;
++  const message = (type: string, payload: unknown, extra = {}) => ({ v: 1, ...identity, id: `n${++id}`, type, payload, ...extra });
++  const load = () => transport.receive(message('load', { snapshot: initial, mode: 'source', selection: { anchor: 0, head: 0 }, assetBase: 'ret-resource://doc/', appearance: 'light', zoom: 1 }));
++  return { posts, transport, message, load };
++}
++afterEach(() => document.body.replaceChildren());
++describe('structured v1 native transport with real CM view', () => {
++  it('posts ready, loads once, emits/retains ordered commits and returns a committed barrier reply', async () => {
++    const h = harness(); await Promise.resolve(); expect(h.posts[0]).toMatchObject({ ...identity, v: 1, type: 'ready', payload: {} });
++    expect(await h.load()).toMatchObject({ type: 'loaded', replyTo: 'n1', payload: { revision: 0 } });
++    const view = h.transport.session!.view!;
++    view.dispatch({ changes: { from: 1, insert: '!' }, userEvent: 'input.type' });
++    const commit = h.posts.find(e => e.type === 'commit')!;
++    expect(commit.payload).toMatchObject({ base: 0, revision: 1 });
++    expect(h.transport.session!.pendingCommits()).toHaveLength(1);
++    await h.transport.receive(h.message('ack', { revision: 1 }, { replyTo: commit.id }));
++    expect(h.transport.session!.pendingCommits()).toEqual([]);
++    const barrier = await h.transport.receive(h.message('barrier', { purpose: 'save' }));
++    expect(barrier).toMatchObject({ type: 'snapshot', payload: { snapshot: { ...initial, text: 'a!\nb', revision: 1 }, composing: false } });
++    expect(await h.load()).toMatchObject({ type: 'error' });
++    expect(h.transport.session!.view).toBe(view); h.transport.destroy();
++  });
++  it('deduplicates native mutations and rejects reused IDs, wrong identities and malformed envelopes', async () => {
++    const h = harness(); await h.load();
++    const e = h.message('applyPatches', { base: 0, patches: [{ from: 0, to: 1, insert: 'x', eols: [] }], reason: 'assets' });
++    const first = await h.transport.receive(e);
++    expect(await h.transport.receive(e)).toEqual(first);
++    expect(h.transport.session!.snapshot().revision).toBe(1);
++    expect(await h.transport.receive({ ...e, payload: { ...e.payload as object, base: 1 } })).toMatchObject({ type: 'error' });
++    expect(await h.transport.receive({ ...h.message('barrier', { purpose: 'save' }), sessionID: 'other' })).toMatchObject({ type: 'error' });
++    expect(await h.transport.receive({ ...h.message('barrier', { purpose: 'save' }), v: 2 })).toMatchObject({ type: 'error' });
++    expect(await h.transport.receive(h.message('command', { name: 'eval', args: 'bad()' }))).toMatchObject({ type: 'error' });
++    h.transport.destroy();
++  });
++  it('keeps provisional DOM session text out of snapshot replies and preserves focused view across settings', async () => {
++    const h = harness(); await h.load(); const session = h.transport.session!; const view = session.view!;
++    view.focus(); session.beginComposition();
++    view.dispatch({ changes: { from: 1, insert: '拼' }, userEvent: 'input.type.compose.start' });
++    const reply = await h.transport.receive(h.message('barrier', { purpose: 'close' }));
++    expect(reply).toMatchObject({ type: 'snapshot', payload: { snapshot: initial, composing: true } });
++    session.endComposition();
++    for (const [name, args] of [['setMode', { mode: 'live' }], ['setAppearance', { appearance: 'dark' }], ['setZoom', { zoom: 1.25 }]] as const)
++      await h.transport.receive(h.message('command', { name, args }));
++    expect(session.view).toBe(view); expect(document.activeElement).toBe(view.contentDOM);
++    h.transport.destroy();
++  });
++  it('waits for native rich clipboard result and freezes on a commit gap without stale reload', async () => {
++    const h = harness(); await h.load(); const session = h.transport.session!;
++    session.dispatch({ selection: { anchor: 0, head: 1 } });
++    const copying = h.transport.receive(h.message('command', { name: 'copyRich' }));
++    await Promise.resolve();
++    const write = h.posts.find(e => e.type === 'clipboardWrite')!;
++    expect(write.payload).toMatchObject({ text: 'a' });
++    await h.transport.receive(h.message('result', { ok: true }, { replyTo: write.id }));
++    expect(await copying).toMatchObject({ type: 'result', payload: { ok: true } });
++    session.edit([{ from: 0, to: 1, insert: 'new', eols: [] }]);
++    const resync = await h.transport.receive(h.message('resyncRequired', { expected: 0 }));
++    expect(session.snapshot().text).toBe('new\nb'); expect(session.pendingCommits()).toHaveLength(1);
++    expect(resync).toMatchObject({ type: 'snapshot', payload: { snapshot: { text: 'new\nb', revision: 1 } } });
++    h.transport.destroy();
++  });
++});
++
++it('replaces opaque asset capabilities without source changes and defers live redraw through preedit', async () => {
++  const h = harness(); await h.load();
++  const options: import('../src/editor/live-contract').LiveOptions[] = [];
++  h.transport.installLiveExtensions(o => { options.push(o); return []; });
++  expect(options.at(-1)!.resolveImage('space%20name.png')).toBeNull();
++  const assets = { 'space name.png': 'ret-resource://asset/123' };
++  expect(await h.transport.receive(h.message('command', { name: 'setAssets', args: { assets } }))).toMatchObject({ type: 'result', payload: { ok: true } });
++  expect(options.at(-1)!.resolveImage('space%20name.png')).toBe('ret-resource://asset/123');
++  expect(options.at(-1)!.resolveImage('https://example.com/image.png')).toBeNull();
++  expect(h.transport.session!.snapshot()).toEqual(initial);
++  h.transport.session!.beginComposition(); const count = options.length;
++  await h.transport.receive(h.message('command', { name: 'setAssets', args: { assets: {} } }));
++  expect(options).toHaveLength(count); h.transport.session!.endComposition();
++  expect(options).toHaveLength(count + 1);
++  expect(options.at(-1)!.resolveImage('space name.png')).toBeNull();
++  h.transport.destroy();
++});
++
++it('uses the 16px screen base at 100% and scales to 20px at 125%', async () => {
++  const h = harness(); await h.load(); const dom = h.transport.session!.view!.dom;
++  expect(getComputedStyle(dom).fontSize).toBe('16px');
++  await h.transport.receive(h.message('command', { name: 'setZoom', args: { zoom: 1.25 } }));
++  expect(getComputedStyle(dom).fontSize).toBe('20px');
++  expect(h.transport.session!.snapshot()).toEqual(initial); h.transport.destroy();
++});
+
+--- /dev/null
++++ web/test/session-browser.mjs
+@@ -0,0 +1,70 @@
++import assert from 'node:assert/strict';
++import path from 'node:path';
++import { pathToFileURL } from 'node:url';
++import { chromium } from 'playwright';
++const browser = await chromium.launch({ executablePath: process.env.RET_CHROMIUM || `${process.env.HOME}/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing` });
++try {
++  const page = await browser.newPage(); const errors = [], external = [];
++  page.on('pageerror', e => errors.push(e.message));
++  await page.route(/^https?:/, route => { external.push(route.request().url()); return route.abort(); });
++  await page.addInitScript(() => {
++    window.retEditorBootstrap = { documentID: 'browser-doc', sessionID: 'browser-session' };
++    window.posts = [];
++    window.webkit = { messageHandlers: { ret: { postMessage: e => window.posts.push(e) } } };
++    let sequence = 0;
++    window.message = (type, payload, replyTo) => ({ v: 1, ...window.retEditorBootstrap, id: `native-${++sequence}`, type, payload, ...(replyTo ? { replyTo } : {}) });
++  });
++  await page.goto(pathToFileURL(path.resolve('build/web/index.html')).href);
++  await page.waitForFunction(() => window.retEditor && window.posts.some(e => e.type === 'ready'));
++  const original = { text: 'a\nb\nc\n尾', eols: ['\r\n', '\r', '\n'], bom: true, revision: 0 };
++  assert.equal((await page.evaluate(async snapshot => window.retEditor.receive(window.message('load', { snapshot, mode: 'source', selection: { anchor: snapshot.text.length, head: snapshot.text.length }, assetBase: '', assets: {}, appearance: 'light', zoom: 1 })), original)).type, 'loaded');
++  await page.locator('.cm-content').focus(); await page.keyboard.type('!');
++  assert.equal(await page.evaluate(() => window.retEditor.session.snapshot().text), original.text + '!');
++  const styles = await page.evaluate(async () => {
++    const session = window.retEditor.session, dom = session.view.contentDOM;
++    await window.retEditor.receive(window.message('command', { name: 'setMode', args: { mode: 'live' } }));
++    await window.retEditor.receive(window.message('command', { name: 'setAppearance', args: { appearance: 'dark' } }));
++    const before = getComputedStyle(session.view.dom).fontSize;
++    await window.retEditor.receive(window.message('command', { name: 'setZoom', args: { zoom: 1.25 } }));
++    return { sameDOM: dom === session.view.contentDOM, focused: document.activeElement === dom, before, after: getComputedStyle(session.view.dom).fontSize };
++  });
++  assert.deepEqual(styles, { sameDOM: true, focused: true, before: '16px', after: '20px' });
++  const undo = await page.evaluate(async () => {
++    await window.retEditor.receive(window.message('command', { name: 'undo' }));
++    return window.retEditor.receive(window.message('barrier', { purpose: 'save' }));
++  });
++  assert.deepEqual(undo.payload.snapshot, { ...original, revision: 2 });
++  const paste = await page.evaluate(async () => {
++    const transfer = new DataTransfer(); transfer.setData('text/plain', 'plain\r\n**md**'); transfer.setData('text/html', '<h1>wrong</h1>');
++    window.retEditor.session.view.contentDOM.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer }));
++    await Promise.resolve(); return window.retEditor.session.snapshot();
++  });
++  assert.equal(paste.text, original.text + 'plain\n**md**');
++  assert.deepEqual(paste.eols, [...original.eols, '\r\n']);
++  const composition = await page.evaluate(async () => {
++    const session = window.retEditor.session;
++    session.view.contentDOM.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
++    session.view.dispatch({ changes: { from: session.state.doc.length, insert: '拼' }, userEvent: 'input.type.compose.start' });
++    const barrier = await window.retEditor.receive(window.message('barrier', { purpose: 'close' }));
++    session.view.contentDOM.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
++    await new Promise(resolve => setTimeout(resolve, 20));
++    return { barrier: barrier.payload, final: session.snapshot() };
++  });
++  assert.deepEqual(composition.barrier.snapshot, paste); assert.equal(composition.barrier.composing, true);
++  assert.equal(composition.final.text, paste.text + '拼');
++  assert.equal(composition.final.revision, paste.revision + 1);
++  const image = await page.evaluate(async () => {
++    const session = window.retEditor.session, before = session.snapshot();
++    const requests = window.posts.filter(e => e.type === 'assetRequest').length;
++    const response = await window.retEditor.receive(window.message('command', { name: 'insertImage', args: { destinations: ['报告.assets/图 1.png', '../other(2).png'], destination: 'ignored.png', alt: '' } }));
++    const inserted = session.snapshot();
++    await window.retEditor.receive(window.message('command', { name: 'undo' }));
++    return { before, inserted, undo: session.snapshot(), response: response.type, extraChooser: window.posts.filter(e => e.type === 'assetRequest').length - requests };
++  });
++  assert.equal(image.response, 'result'); assert.equal(image.extraChooser, 0);
++  assert.equal(image.inserted.revision, image.before.revision + 1);
++  assert.ok(image.inserted.text.includes('![](<报告.assets/图%201.png>)\n![](<../other(2).png>)'));
++  assert.deepEqual({ ...image.undo, revision: image.before.revision }, image.before);
++  assert.deepEqual(errors, []); assert.deepEqual(external, []);
++  console.log('PASS local file:// editor: classic bundle, native bootstrap/ready, real typing, shared undo/EOL/BOM, plain paste, focused settings, 16px zoom, synthetic composition barrier, atomic native multi-image insertion without chooser, zero network');
++} finally { await browser.close(); }
+
+--- /dev/null
++++ web/src/protocol.ts
+@@ -0,0 +1,45 @@
++/** Protocol v1. All offsets are UTF-16 in LF-normalized text. */
++export type EOL = '\n' | '\r\n' | '\r';
++export type Revision = number;
++export type Range = { from: number; to: number };
++export type Selection = { anchor: number; head: number };
++export type Source = { text: string; eols: EOL[]; bom: boolean };
++export type Snapshot = Source & { revision: Revision };
++export type Patch = Range & { insert: string; eols: EOL[] };
++export type CommitReason = 'edit' | 'undo' | 'redo' | 'assets';
++export type Commit = { base: Revision; revision: Revision; patches: Patch[]; selection: Selection; reason: CommitReason };
++export type Mode = 'live' | 'source';
++export type Appearance = 'system' | 'light' | 'dark';
++export type SnapshotPurpose = 'save' | 'export' | 'close';
++export type CommandName = 'undo' | 'redo' | 'format' | 'find' | 'replace' | 'replaceAll' |
++  'copySource' | 'copyPlain' | 'copyRich' | 'insertImage' | 'setMode' | 'setAppearance' | 'setZoom' | 'revealRange' |
++  'setReadOnly' | 'setAssets'; // Internal Save As transaction lock.
++export type EditorCommand = { name: CommandName; args?: unknown };
++
++export interface Payloads {
++  ready: Record<string, never>;
++  load: { snapshot: Snapshot; mode: Mode; selection: Selection; assetBase: string; assets?: Record<string, string>; appearance: Appearance; zoom: number };
++  loaded: { revision: Revision };
++  commit: Commit;
++  ack: { revision: Revision };
++  resyncRequired: { expected: Revision };
++  barrier: { purpose: SnapshotPurpose };
++  snapshot: { snapshot: Snapshot; selection: Selection; composing: boolean };
++  command: EditorCommand;
++  result: { ok: boolean; error?: string };
++  applyPatches: { base: Revision; patches: Patch[]; reason: 'assets' };
++  saved: { revision: Revision; contentHash: string };
++  state: { revision: Revision; selection: Selection; canUndo: boolean; canRedo: boolean; composing: boolean; mode: Mode };
++  clipboardWrite: { text: string; html?: string };
++  openLink: { url: string };
++  assetRequest: { action: 'paste' | 'choose' | 'drop'; requestID: string };
++  error: { code: string; message: string; range?: Range };
++}
++export type MessageType = keyof Payloads;
++/** Distributive union preserves the type/payload relationship when T is omitted. */
++export type Envelope<T extends MessageType = MessageType> = {
++  [K in T]: { v: 1; documentID: string; sessionID: string; id: string; replyTo?: string; type: K; payload: Payloads[K] }
++}[T];
++export type BridgeEnvelope<T extends MessageType = MessageType> = Envelope<T>;
++export const WEB_MESSAGE_TYPES = ['ready', 'loaded', 'commit', 'snapshot', 'result', 'state', 'clipboardWrite', 'openLink', 'assetRequest', 'error'] as const satisfies readonly MessageType[];
++export const NATIVE_MESSAGE_TYPES = ['load', 'ack', 'resyncRequired', 'barrier', 'command', 'applyPatches', 'saved', 'result', 'error'] as const satisfies readonly MessageType[];
+

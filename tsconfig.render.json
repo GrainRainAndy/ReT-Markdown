@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["web/src/render/**/*.ts", "web/src/render-entry.ts", "web/test/render.test.ts", "web/test/build.test.ts", "vitest.config.ts"]
+}

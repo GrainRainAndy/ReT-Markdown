@@ -1,0 +1,51 @@
+# Task 5 scoped recovery and asset fix re-review
+
+2026-10-15. Supersedes the open status of R5-1..4 and the Task 5 part of cross-R2-2 in `task-5-review.md` for the captured implementation below.
+
+**Spec verdict: PASS within R5-1..4 / cross-R2-2 scope.**
+
+**Quality verdict: PASS within R5-1..4 / cross-R2-2 scope.** No actionable remaining defect or demonstrated regression was found in these fixes and the reviewed affected paths.
+
+**Scope and method.** Follow-up to the original independent native review, limited to the named findings, their shared save/recovery contract, and newly affected paths. Read current production implementations, regression tests, implementation reports and retained execution logs. No product changes, shared build writes, app manipulation, Git operations, subagents or redundant test runs were performed. Existing executed results below are attributed to their logs; this review does not claim a fresh suite run. PDF retains its separate completed scoped review and was not re-reviewed.
+
+| Original finding | Resolution and reviewed evidence |
+| --- | --- |
+| **R5-1 — resolved**: independent Save As files share recovery | `DraftStore.swift:31–43` scopes generations by stable document UUID **and canonical named path**, with explicit `untitled` scope. Recovery validates both fields (`:127–157`), including the legacy fallback. `NativeAssetIntegration.swift:100–125`, `:189–197` rebinds only after successful adoption, captures namespace/store/epoch with each persistence closure and rejects an old binding at every suspension boundary. `AssetsTests.swift:111–156` saves A then B, opens A independently, writes distinct edits/images, invokes a retained old-A closure, removes original images and recovers each file's own text/frozen image bytes. It also asserts identical live mirror/bridge objects, stable document ID, selection and undo state across Save As. No wire-ID change or editor reload is needed to isolate recovery. |
+| **R5-2 — resolved**: canceled return migration overwrites target provenance | `AssetStore.swift:271–285` writes a separately named immutable migration manifest. `:368–389` selects it only when the target has the exact candidate Markdown hash **and has changed from the pre-stage disk identity**, so preexisting identical text does not activate a staged manifest. Adoption publishes committed provenance; cancellation removes eligibility while retaining image bytes (`:291–305`). `AssetsTests.swift:159–182` compares the entire A manifest during staging and after canceled A→B→A migration, including A-only imported provenance and unchanged Markdown. `:84–99` verifies unchanged identical text keeps the committed manifest and atomic replacement followed by a simulated pre-adoption crash selects the exact staged generation. |
+| **R5-3 — resolved**: container images mistaken for code | `AssetStore.swift:549–617` accounts for blockquote markers, list continuation columns, nested/ordered markers and paragraph state before classifying indented/fenced code. Definition scanning uses container-adjusted starts but retains original UTF-16 offsets (`:690–703`). `AssetsTests.swift:185–201` covers the original four-space list image, nested lists, quoted image definitions, actual container code/fences and a paragraph-continuation non-definition. `/private/tmp/ret-task5-round1/renderer-parity.json` records the eight matching installed markdown-it parser outcomes. The two original scanner fixtures now have blank lines before reference definitions rather than asserting a definition that interrupts a paragraph. |
+| **R5-4 — resolved**: recovered unmanaged frozen bytes disappear on import | `AssetStore.swift:154–156`, `:248–249`, `:307–313` explicitly preserve capability data when rebuilding import, migration and rename manifests. `AssetsTests.swift:205–235` removes the unmanaged original, recovers frozen bytes, imports another image, renames, migrates, persists/re-recovers and reopens committed provenance. Authorization returns the original bytes after every transition. The existing scheme handler did not need a change. |
+| **Cross-R2-2 — resolved**: new-session r1 rejected after old r10 | `DraftStore.swift:45–85` persists session eligibility under a per-namespace nonblocking filesystem lock, compares editor revisions only within the eligible session, and retains monotonic generation sequence. `NativeAssetIntegration.swift:38–54`, `:98–125` installs a new captured persistence closure synchronously when Task 2 resets the mirror, then awaits ordered epoch creation before writes. `AssetsTests.swift:40–59` verifies old-epoch r99 rejection/new-epoch r1 recovery and same-session ordering; `:238–269` verifies named reopen/reset plus typed-image refresh. Legacy UUID-only generations are read-only fallback filtered to the exact URL, including nil for untitled (`:21–37`). Epoch rotation preserves prior complete recovery rather than hiding it. |
+
+**Affected save/finalization contract.** `NativeAssetIntegration.swift:188–218` captures persistent adoption and patch-applied flags. It recognizes candidate source whose commit arrived before a command acknowledgement was lost, marks a successful patch before a later asset-map send can fail, and permits re-sending maps without reapplying a stale base patch. `AssetsTests.swift:62–81` exercises repeated finalization after an already-committed candidate and verifies stable live mirror/bridge/revision. Task 2 records the disk fingerprint before awaiting this closure, retains it on post-write failure, retries it before a subsequent save and reserves `didFail` for pre-write failure. Its actual in-place/Save As retry and subsequent external-edit protection are reviewed in `task-2-fix-review.md`.
+
+Adoption/cancellation now report durable metadata errors. This coordinated contract deliberately replaces the original assumption of no fallible adoption I/O: an adoption error remains recoverable through the retained callback and immutable candidate rather than triggering post-commit cancellation. Save To uses a separate store and publishes copy provenance without changing the live recovery binding (`NativeAssetIntegration.swift:178–197`); in-place rename publishes only in `didWrite` and preserves the resource directory (`:167–173`). The adjacent canonical-component correction in `AssetIO.relativeDestination` keeps `/tmp` aliases from generating parent-directory references, with `AssetsTests.swift:102–108` providing its specific regression.
+
+**Recorded verification checked.** The final report is complete. `/private/tmp/ret-task5-round1/green-final.log`, 21:58:47 +0800, records **38 tests, zero failures** against fresh isolated copies of current native sources. `final-source-hashes.json` matches every one of its 18 workspace source/test entries, including the current Task 2 controller. `build/task2/fix-all-swift.log`, 21:59:02, independently records these 38 asset tests passing in the shared **79-test / 1-skip / zero-failure** run. `build/task2/fix-focused-final.log` records the 18 bridge/save tests passing, including the externally bounded public activity tests. No tests or native PDF printing were rerun by this reviewer.
+
+**Acceptance boundary.** This is a scoped code/storage integration PASS, with no remaining original finding. Main retains packaged-app Save As undo/redo, genuine WebView acknowledgement/process-loss UI, close/relaunch/versions and input/paste/drop acceptance. The focused tests inspect native bridge selection/history state and storage bytes; they do not claim to operate a real CodeMirror undo stack or to finish the controller's GUI acceptance.
+
+
+**Captured SHA-256 manifest.** Capture UTC: 2026-10-15T14:02:51.053458+00:00. Direct current-file review in this non-Git workspace; immutable copies and JSON are under `/private/tmp/ret-native-fix-review-20261015/`. The Task 5 final test-source manifest was compared with the workspace: all 18 entries match. Reviewed inputs were checked again before delivery.
+
+```text
+06b9dd457026ab81a190af95cb02dace4ee204ed4fa9bb8c0617bc9e1ab792a8  /private/tmp/ret-task5-round1/final-source-hashes.json
+7893fe9ddf466382b30eaf66b4b4445f35ec64f34fb662ddf1ab61e9d97978fc  /private/tmp/ret-task5-round1/green-final.log
+a45f0a6a391f545996a8cab94e7abddc5703249efa8f272e919f2abbe335d32a  /private/tmp/ret-task5-round1/renderer-parity.json
+e07cdf668fb07925b457f205810b6161ed99f0940d3b2aa22e10f71a09f69499  Sources/ReTMarkdown/Bridge/AssetSchemeHandler.swift
+eba8533a3d5b135adcad96ece5a1723fd3371dc832c4f716ffe5cd150cb94524  Sources/ReTMarkdown/Bridge/EditorBridge.swift
+965e915d2fde678d13d43b866694245f243002af37f1e76341309e5c2d539841  Sources/ReTMarkdown/Documents/MarkdownDocument.swift
+a33f1b17230d85e4cc44eb18d44a96f086db16dccbdafd337c5d437c5642e227  Sources/ReTMarkdown/Storage/AssetStore.swift
+028e47228dda2108f70b70d619b6dad2be47a879ad8606df33fd4aebe44324bf  Sources/ReTMarkdown/Storage/DraftStore.swift
+42cf35f413688ea1471d5041ef40ee964ebbf450665383ce9b5f133a3c0b3db9  Sources/ReTMarkdown/Storage/ExternalChanges.swift
+283fae43257e087a9390a8c004b9d74fc84ec6c4bb84178097a15db6119210a1  Sources/ReTMarkdown/Storage/NativeAssetIntegration.swift
+2f6eac49b9d2db6c22262be0d514ee7d44213664e30788d4a6c4a82182a3d202  Sources/ReTMarkdown/Storage/SaveCoordinator.swift
+90f30afdc25b1da39495bdf1c383afbc955c51e8d84b625ce5ba2e2bc4135fe3  Tests/ReTMarkdownTests/AssetsTests.swift
+d835cf238f376260f39fd57b68f0c654aa02832653f108e4ffb90aecdbccb38a  Tests/ReTMarkdownTests/SaveTests.swift
+5ee0a59a8e2f6b61c45791721c1c676551a9375ff16a8519a89beb0f53e0f41d  build/task2/fix-all-swift.log
+0efcf1c5acc2638fbc6a53e20f1f69b10b1c1811866e1140b33bdf362c52add6  build/task2/fix-focused-final.log
+27b0b112d8bf5f3455ddc76ef30a452fc5488ddb321c87b967db522201274145  docs/architecture/2026-10-14-native-editor.md
+aa1506a9fce3c1bd536ef79c0ec45ad25197df4a065f1f3555dcc980ec3da47c  docs/specs/2026-10-14-markdown-editor-design.md
+1612f4ed85b25cbbf3789a43aebbe561e07632737a2cf3c3c7a5a69e65361b82  docs/testing/reviews/task-5-review.md
+90dc6085fd162452e8bc196f31c25cbad085cba45d901ebfddd0a18f4afafcf0  docs/testing/task-2-fix-report.md
+049ff1f9e62ffdaf2009a70e96e600ce6005f3849f7f98a83d8c0336b298a476  docs/testing/task-5-fix-report.md
+```

@@ -1,0 +1,1035 @@
+# Renderer review package
+All new files; no Git exists. Captured after renderer completion. Root build/config ownership transfers to Task3 for integration.
+
+--- /dev/null
++++ package.json
+@@ -0,0 +1,44 @@
++{
++  "name": "ret-markdown",
++  "version": "0.1.0",
++  "private": true,
++  "type": "module",
++  "scripts": {
++    "test": "vitest run",
++    "typecheck": "tsc --noEmit",
++    "typecheck:render": "tsc --noEmit --project tsconfig.render.json",
++    "test:render": "vitest run web/test/render.test.ts web/test/build.test.ts",
++    "build:web": "node scripts/build-web.mjs",
++    "test:browser": "node web/test/render-browser.mjs"
++  },
++  "devDependencies": {
++    "@types/katex": "0.16.8",
++    "@types/markdown-it": "14.2.0",
++    "@types/node": "26.6.5",
++    "esbuild": "0.28.2",
++    "jsdom": "30.1.2",
++    "playwright": "1.64.1",
++    "typescript": "7.0.2",
++    "vitest": "5.0.4"
++  },
++  "dependencies": {
++    "@codemirror/autocomplete": "6.20.3",
++    "@codemirror/commands": "6.11.1",
++    "@codemirror/lang-javascript": "6.2.5",
++    "@codemirror/lang-json": "6.0.2",
++    "@codemirror/lang-markdown": "6.5.2",
++    "@codemirror/lang-python": "6.2.1",
++    "@codemirror/language": "6.13.1",
++    "@codemirror/lint": "6.9.7",
++    "@codemirror/search": "6.7.2",
++    "@codemirror/state": "6.7.6",
++    "@codemirror/theme-one-dark": "6.1.3",
++    "@codemirror/view": "6.43.14",
++    "@fontsource/open-sans": "5.3.0",
++    "codemirror": "6.0.2",
++    "highlight.js": "11.12.0",
++    "katex": "0.19.0",
++    "markdown-it": "15.0.2",
++    "markdown-it-task-lists": "2.1.1"
++  }
++}
+
+Lockfile exists; exactversions/integrity inspect file directly if needed.
+--- /dev/null
++++ tsconfig.json
+@@ -0,0 +1,15 @@
++{
++  "compilerOptions": {
++    "target": "ES2022",
++    "module": "ESNext",
++    "moduleResolution": "Bundler",
++    "strict": true,
++    "noEmit": true,
++    "esModuleInterop": true,
++    "resolveJsonModule": true,
++    "lib": ["ES2022", "DOM"],
++    "types": ["node", "vitest/globals"],
++    "skipLibCheck": true
++  },
++  "include": ["web/**/*.ts", "vitest.config.ts"]
++}
+
+--- /dev/null
++++ tsconfig.render.json
+@@ -0,0 +1,4 @@
++{
++  "extends": "./tsconfig.json",
++  "include": ["web/src/render/**/*.ts", "web/src/render-entry.ts", "web/test/render.test.ts", "web/test/build.test.ts", "vitest.config.ts"]
++}
+
+--- /dev/null
++++ vitest.config.ts
+@@ -0,0 +1,5 @@
++import { defineConfig } from 'vitest/config';
++
++export default defineConfig({
++  test: { include: ['web/test/*.test.ts'], css: { include: [/\.css/] } },
++});
+
+--- /dev/null
++++ web/src/render/markdown.ts
+@@ -0,0 +1,184 @@
++import MarkdownIt, { type Token } from 'markdown-it';
++import taskLists from 'markdown-it-task-lists';
++import hljs from 'highlight.js';
++import { installMath } from './math';
++import { createEnv, inlineRange, installPositions, type RenderEnv } from './positions';
++import typography from '../../styles/typography.css?raw';
++import palette from '../../styles/palette.css?raw';
++
++export interface RenderOptions {
++  resolveImage?: (destination: string) => string | null;
++}
++export interface RenderIssue {
++  kind: 'math' | 'image';
++  message: string;
++  from: number;
++  to: number;
++}
++export interface RenderResult {
++  html: string;
++  issues: RenderIssue[];
++}
++
++const md = new MarkdownIt({
++  // Tokenize HTML atomically, then escape it below. This keeps Markdown/math inside
++  // unsupported HTML from becoming active rendering or spurious export errors.
++  html: true,
++  linkify: false,
++  typographer: false,
++  highlight(code, language) {
++    if (language && hljs.getLanguage(language)) {
++      return hljs.highlight(code, { language, ignoreIllegals: true }).value;
++    }
++    return '';
++  },
++}).use(taskLists, { enabled: false, label: false });
++
++// Links never load resources; the native host intercepts navigation and opens external
++// links in the system browser. Unknown/custom schemes in document source stay inert.
++md.validateLink = destination => !/[\u0000-\u0020\u007f]/.test(destination)
++  && (!/^[a-z][a-z\d+.-]*:/i.test(destination) || /^(?:https?|mailto):/i.test(destination)
++    || /^file:\/\/(?:\/|localhost\/)/i.test(destination));
++md.renderer.rules.link_open = (tokens, index, options, _env, renderer) => {
++  const token = tokens[index];
++  // Local file destinations are parsed for images/reference definitions, never active
++  // document navigation. Only the supplied resolver can make them image resources.
++  if (/^file:/i.test(String(token.attrGet('href') ?? ''))) token.attrs = token.attrs?.filter(([name]) => name !== 'href') ?? null;
++  return renderer.renderToken(tokens, index, options);
++};
++
++installPositions(md);
++installMath(md);
++
++// A conservative bound keeps small snippets together while letting large or heavily
++// wrapped blocks fragment. These classes are layout hints and never alter code text.
++for (const type of ['fence', 'code_block']) {
++  const defaultRule = md.renderer.rules[type]!;
++  md.renderer.rules[type] = (tokens, index, options, env, renderer) => {
++    const content = tokens[index].content;
++    const lines = content.trimEnd().split('\n');
++    const short = lines.length <= 30 && lines.every(line => line.length <= 120) && content.length <= 2400;
++    return defaultRule(tokens, index, options, env, renderer).replace('<pre>', `<pre class="${short ? 'short-code' : 'long-code'}">`);
++  };
++}
++
++md.core.ruler.after('github-task-lists', 'mark-task-checkboxes', state => {
++  for (let i = 2; i < state.tokens.length; i++) {
++    const token = state.tokens[i];
++    if (token.type === 'inline' && state.tokens[i - 2].attrGet('class') === 'task-list-item') {
++      const checkbox = token.children?.[0];
++      if (checkbox?.type === 'html_inline') checkbox.meta = { taskCheckbox: true };
++    }
++  }
++});
++md.renderer.rules.html_inline = (tokens, index) => tokens[index].meta?.taskCheckbox
++  ? tokens[index].content : md.utils.escapeHtml(tokens[index].content);
++md.renderer.rules.html_block = (tokens, index) => `<pre class="raw-html"><code>${md.utils.escapeHtml(tokens[index].content)}</code></pre>\n`;
++
++const imageRule = md.inline.ruler.getRules('').find(rule => rule.name === 'image')!;
++md.inline.ruler.at('image', (state, silent) => {
++  const start = state.pos;
++  const matched = imageRule(state, silent);
++  if (matched && !silent && state.src === (state.env as RenderEnv).inlineSource) {
++    const token = state.tokens[state.tokens.length - 1];
++    token.meta = { ...token.meta, ...inlineRange(state.env as RenderEnv, start, state.pos) };
++  }
++  return matched;
++});
++
++function decodedPath(destination: string): string {
++  try { return decodeURIComponent(destination); } catch { return destination; }
++}
++
++function localURL(value: string): boolean {
++  // Absolute, explicitly resolved local URLs only; never let a relative result inherit
++  // an HTTP base URL. Raster data URLs cannot carry active SVG/HTML content.
++  return !/[\u0000-\u0020\u007f\\]/.test(value) && (
++    /^ret-resource:\/\//i.test(value) || /^file:\/\/(?:\/|localhost\/)/i.test(value)
++    || /^blob:(?:null\/|file:\/\/|ret-resource:\/\/)/i.test(value)
++    || /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z\d+/=]+$/i.test(value)
++  );
++}
++
++md.renderer.rules.image = (tokens, index, _options, rawEnv, renderer) => {
++  const env = rawEnv as RenderEnv;
++  const token = tokens[index];
++  const destination = decodedPath(String(token.attrGet('src') ?? ''));
++  const alt = renderer.renderInlineAsText(token.children ?? [], md.options, env);
++  const escape = md.utils.escapeHtml;
++  if (/^(?:https?:)?\/\//i.test(destination)) {
++    return `<span class="image-placeholder remote-image" role="img" aria-label="${escape(alt)}">Remote image: ${escape(destination)}</span>`;
++  }
++  let resolved: string | null = null;
++  let message = `Missing local image: ${destination}`;
++  try { resolved = env.options.resolveImage?.(destination) ?? null; }
++  catch (error) { message = `Cannot resolve image ${destination}: ${error instanceof Error ? error.message : String(error)}`; }
++  if (resolved && localURL(resolved)) {
++    return `<img src="${escape(resolved)}" alt="${escape(alt)}"${token.attrGet('title') ? ` title="${escape(String(token.attrGet('title')))}"` : ''}>`;
++  }
++  const { from, to } = token.meta as { from: number; to: number };
++  env.issues.push({ kind: 'image', message, from, to });
++  return `<span class="image-placeholder missing-image" role="img" title="${escape(message)}" data-from="${from}" data-to="${to}">${escape(alt)} — ${escape(destination)}</span>`;
++};
++
++function render(source: string, options: RenderOptions, clipboard = false): RenderResult {
++  const env = createEnv(source, options, clipboard);
++  const html = md.render(source, env);
++  env.issues.sort((a, b) => a.from - b.from || a.to - b.to);
++  return { html, issues: env.issues };
++}
++
++export function renderMarkdown(source: string, options: RenderOptions = {}): RenderResult {
++  return render(source, options);
++}
++
++function mathText(token: Token, env: RenderEnv): string {
++  return token.meta?.closed === false ? env.original.slice(Number(token.meta.from), Number(token.meta.to)) : token.content;
++}
++
++function inlineText(tokens: Token[], env: RenderEnv): string {
++  return tokens.map(token => {
++    if (token.type === 'image') return inlineText(token.children ?? [], env);
++    if (token.type === 'softbreak' || token.type === 'hardbreak') return '\n';
++    if (token.type === 'html_inline') return token.meta?.taskCheckbox ? (token.content.includes('checked') ? '[x]' : '[ ]') : token.content;
++    if (token.type === 'math_inline' || token.type === 'math_block') return mathText(token, env);
++    if (['text', 'code_inline'].includes(token.type)) return token.content;
++    return '';
++  }).join('');
++}
++
++export function plainText(source: string): string {
++  const env = createEnv(source, {});
++  const tokens = md.parse(source, env);
++  let text = '';
++  const lists: { ordered: boolean; next: number }[] = [];
++  for (const token of tokens) {
++    if (token.type === 'bullet_list_open' || token.type === 'ordered_list_open') {
++      lists.push({ ordered: token.type === 'ordered_list_open', next: Number(token.attrGet('start') ?? 1) });
++    } else if (token.type === 'bullet_list_close' || token.type === 'ordered_list_close') {
++      lists.pop();
++      if (!lists.length) text += '\n';
++    } else if (token.type === 'list_item_open') {
++      const list = lists[lists.length - 1];
++      text += '  '.repeat(Math.max(0, lists.length - 1)) + (list.ordered ? `${list.next++}. ` : '- ');
++    } else if (token.type === 'inline') text += inlineText(token.children ?? [], env);
++    else if (['paragraph_close', 'heading_close'].includes(token.type)) text += lists.length ? '\n' : '\n\n';
++    else if (['fence', 'code_block', 'math_block', 'html_block'].includes(token.type)) text += (token.type === 'math_block' ? mathText(token, env) : token.content).replace(/\n$/, '') + '\n\n';
++    else if (['th_close', 'td_close'].includes(token.type)) text += '\t';
++    else if (token.type === 'tr_close') text = text.replace(/\t$/, '') + '\n';
++    else if (token.type === 'table_close') text += '\n';
++    else if (token.type === 'hr') text += '---\n\n';
++  }
++  return text.trimEnd();
++}
++
++export function richClipboard(source: string, options: RenderOptions = {}): { html: string; text: string } {
++  const html = render(source, options, true).html;
++  // MathML keeps clipboard formulas self-contained without depending on bundled KaTeX
++  // font URLs. Target applications may ignore MathML; the text fallback retains TeX.
++  return {
++    html: `<style>${typography}\n${palette}</style><div class="markdown-body" data-color-scheme="light" style="font-family:Open Sans,Helvetica Neue,Arial,sans-serif;font-size:16px;line-height:1.6;color:#333333;background:#ffffff">${html}</div>`,
++    text: plainText(source),
++  };
++}
++
+
+--- /dev/null
++++ web/src/render/math.ts
+@@ -0,0 +1,99 @@
++import katex from 'katex';
++import type { MarkdownIt, Token } from 'markdown-it';
++import { inlineRange, type RenderEnv } from './positions';
++
++interface MathMeta extends Record<string, unknown> { from: number; to: number; closed: boolean }
++
++function renderMath(token: Token, env: RenderEnv, escape: (value: string) => string): string {
++  const meta = token.meta as MathMeta;
++  try {
++    if (!meta.closed) throw new Error('Unclosed math delimiter');
++    return katex.renderToString(token.content, {
++      displayMode: token.type === 'math_block',
++      output: env.clipboard ? 'mathml' : 'htmlAndMathml',
++      trust: false,
++      strict: 'ignore',
++      throwOnError: true,
++      maxExpand: 1000,
++      maxSize: 50,
++    });
++  } catch (error) {
++    const message = error instanceof Error ? error.message : 'Invalid mathematical expression';
++    env.issues.push({ kind: 'math', message, from: meta.from, to: meta.to });
++    const tag = token.type === 'math_block' ? 'div' : 'span';
++    return `<${tag} class="math-error" title="${escape(message)}" data-from="${meta.from}" data-to="${meta.to}">${escape(env.original.slice(meta.from, meta.to))}</${tag}>`;
++  }
++}
++
++export function installMath(md: MarkdownIt): void {
++  md.inline.ruler.before('escape', 'math_inline', (state, silent) => {
++    const start = state.pos;
++    const env = state.env as RenderEnv;
++    if (state.src !== env.inlineSource || state.src[start] !== '$') return false;
++    // Dollar followed by whitespace is ordinary text (e.g. currency); escaped dollars
++    // are consumed by markdown-it's escape rule before this position is reached.
++    const delimiter = state.src.startsWith('$$', start) ? '$$' : '$';
++    if (delimiter === '$' && /\s/.test(state.src[start + 1] ?? ' ')) return false;
++    const lineEnd = state.src.indexOf('\n', start);
++    const max = lineEnd < 0 ? state.posMax : Math.min(lineEnd, state.posMax);
++    let close = start + delimiter.length;
++    while (close < max) {
++      close = state.src.indexOf(delimiter, close);
++      if (close < 0 || close >= max) { close = -1; break; }
++      let slashes = 0;
++      for (let j = close - 1; state.src[j] === '\\'; j--) slashes++;
++      if (slashes % 2 === 0) break;
++      close += delimiter.length;
++    }
++    const closed = close >= start + delimiter.length && close < max;
++    const end = closed ? close + delimiter.length : max;
++    if (!silent) {
++      const token = state.push(delimiter === '$$' ? 'math_block' : 'math_inline', '', 0);
++      token.content = state.src.slice(start + delimiter.length, closed ? close : max);
++      token.meta = { ...inlineRange(env, start, end), closed } satisfies MathMeta;
++    }
++    state.pos = end;
++    return true;
++  });
++
++  md.block.ruler.before('fence', 'math_block', (state, startLine, endLine, silent) => {
++    const start = state.bMarks[startLine] + state.tShift[startLine];
++    if (state.sCount[startLine] - state.blkIndent >= 4 || !state.src.startsWith('$$', start)) return false;
++    if (silent) return true;
++    const env = state.env as RenderEnv;
++    let line = startLine;
++    let close = state.src.indexOf('$$', start + 2);
++    let closed = close >= 0 && close <= state.eMarks[startLine] - 2;
++    let content = '';
++    if (closed) {
++      if (state.src.slice(close + 2, state.eMarks[line]).trim()) return false;
++      content = state.src.slice(start + 2, close);
++    } else {
++      content = state.src.slice(start + 2, state.eMarks[startLine]);
++      for (line = startLine + 1; line < endLine; line++) {
++        const lineStart = state.bMarks[line] + state.tShift[line];
++        const text = state.src.slice(lineStart, state.eMarks[line]);
++        if (text.trimEnd().endsWith('$$')) {
++          close = state.eMarks[line] - text.length + text.trimEnd().length - 2;
++          content += '\n' + state.src.slice(lineStart, close);
++          closed = true;
++          break;
++        }
++        content += '\n' + text;
++      }
++      if (!closed) line = Math.max(startLine, endLine - 1);
++    }
++    const end = closed ? close + 2 : state.eMarks[line];
++    const token = state.push('math_block', '', 0);
++    token.block = true;
++    token.map = [startLine, line + 1];
++    token.content = content.trim();
++    token.meta = { from: env.offsets[start], to: env.offsets[end], closed } satisfies MathMeta;
++    state.line = line + 1;
++    return true;
++  }, { alt: ['paragraph', 'reference', 'blockquote', 'list'] });
++
++  for (const type of ['math_inline', 'math_block']) {
++    md.renderer.rules[type] = (tokens, index, _options, env) => renderMath(tokens[index], env as RenderEnv, md.utils.escapeHtml);
++  }
++}
+
+--- /dev/null
++++ web/src/render/positions.ts
+@@ -0,0 +1,78 @@
++import type { MarkdownIt, Env } from 'markdown-it';
++import type { RenderIssue, RenderOptions } from './markdown';
++
++export interface RenderEnv extends Env {
++  original: string;
++  normalized: string;
++  offsets: number[];
++  issues: RenderIssue[];
++  options: RenderOptions;
++  inlineSource: string;
++  inlineOffsets: number[];
++  clipboard: boolean;
++}
++
++export function createEnv(source: string, options: RenderOptions, clipboard = false): RenderEnv {
++  const offsets: number[] = [];
++  let normalized = '';
++  for (let i = 0; i < source.length; i++) {
++    offsets.push(i);
++    const ch = source[i];
++    normalized += ch === '\r' ? '\n' : ch === '\0' ? '\ufffd' : ch;
++    if (ch === '\r' && source[i + 1] === '\n') i++;
++  }
++  offsets.push(source.length);
++  return { original: source, normalized, offsets, issues: [], options, inlineSource: '', inlineOffsets: [], clipboard };
++}
++
++export function inlineRange(env: RenderEnv, from: number, to: number): { from: number; to: number } {
++  return { from: env.inlineOffsets[from], to: to > from ? env.inlineOffsets[to - 1] + 1 : env.inlineOffsets[from] };
++}
++
++/** Map parser-local characters back through CRLF normalization and stripped block prefixes.
++ * Table cells have no map of their own; their row's map and a forward cursor disambiguate
++ * repeated cell contents. Escaped table pipes are the only characters removed inside cells.
++ */
++export function installPositions(md: MarkdownIt): void {
++  md.core.ruler.at('inline', state => {
++    const env = state.env as RenderEnv;
++    const starts = [0];
++    for (let i = 0; i < state.src.length; i++) if (state.src[i] === '\n') starts.push(i + 1);
++    starts.push(state.src.length);
++    let cursor = 0;
++    let limit = state.src.length;
++    for (const token of state.tokens) {
++      if (token.map) {
++        cursor = Math.max(cursor, starts[token.map[0]]);
++        limit = starts[token.map[1]] ?? state.src.length;
++      }
++      if (token.type !== 'inline') continue;
++      const locations: number[] = [];
++      const lines = token.content.split('\n');
++      for (let n = 0; n < lines.length; n++) {
++        const line = lines[n];
++        const exact = state.src.indexOf(line, cursor);
++        if (exact >= cursor && exact + line.length <= limit) {
++          for (let j = 0; j < line.length; j++) locations.push(env.offsets[exact + j]);
++          cursor = exact + line.length;
++        } else {
++          // A table has unescaped \| before its inline parser runs.
++          for (const ch of line.split('')) {
++            while (cursor < limit && state.src[cursor] !== ch) cursor++;
++            locations.push(env.offsets[cursor]);
++            cursor++;
++          }
++        }
++        if (n < lines.length - 1) {
++          const newline = state.src.indexOf('\n', cursor);
++          locations.push(env.offsets[newline]);
++          cursor = newline + 1;
++        }
++      }
++      locations.push(env.offsets[cursor]);
++      env.inlineSource = token.content;
++      env.inlineOffsets = locations;
++      md.inline.parse(token.content, md, env, token.children!);
++    }
++  });
++}
+
+--- /dev/null
++++ web/src/render/assets.d.ts
+@@ -0,0 +1,6 @@
++declare module '*.css?raw' { const content: string; export default content; }
++declare module 'markdown-it-task-lists' {
++  import type { MarkdownIt } from 'markdown-it';
++  const plugin: (md: MarkdownIt, options?: { enabled?: boolean; label?: boolean }) => void;
++  export default plugin;
++}
+
+--- /dev/null
++++ web/src/render-entry.ts
+@@ -0,0 +1,2 @@
++// Renderer-only fallback. The editor's main.ts replaces this entry automatically.
++export { renderMarkdown, plainText, richClipboard } from './render/markdown';
+
+--- /dev/null
++++ web/index.html
+@@ -0,0 +1,19 @@
++<!doctype html>
++<html lang="zh-CN">
++<head>
++  <meta charset="utf-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1">
++  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' ret-resource: file: blob: data:; font-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
++  <title>ReT Markdown</title>
++  <link rel="stylesheet" href="styles/fonts.css">
++  <link rel="stylesheet" href="styles/katex.css">
++  <link rel="stylesheet" href="styles/typography.css">
++  <link rel="stylesheet" href="styles/palette.css">
++  <link rel="stylesheet" href="app.css">
++  <link rel="stylesheet" href="styles/print.css">
++</head>
++<body>
++  <main id="editor" class="markdown-body" aria-label="Markdown document"></main>
++  <script type="module" src="app.js"></script>
++</body>
++</html>
+
+--- /dev/null
++++ web/styles/typography.css
+@@ -0,0 +1,55 @@
++/* Independently implemented from the numeric F19 visual baseline. */
++html { font-size: 16px; }
++body { margin: 0; }
++.markdown-body {
++  box-sizing: border-box;
++  width: 100%;
++  max-width: 860px;
++  margin: 0 auto;
++  padding: 30px;
++  padding-bottom: 100px;
++  font-family: "Open Sans", "Clear Sans", "Helvetica Neue", Helvetica, Arial, "Segoe UI Emoji", "SF Pro", sans-serif;
++  font-size: 1rem;
++  line-height: 1.6;
++  overflow-wrap: break-word;
++}
++@media (min-width: 1400px) { .markdown-body { max-width: 1024px; } }
++@media (min-width: 1800px) { .markdown-body { max-width: 1200px; } }
++.markdown-body h1, .markdown-body h2, .markdown-body h3,
++.markdown-body h4, .markdown-body h5, .markdown-body h6 {
++  margin: 1rem 0;
++  font-weight: 700;
++  line-height: 1.4;
++}
++.markdown-body h1 { font-size: 2.25em; line-height: 1.2; }
++.markdown-body h2 { font-size: 1.75em; line-height: 1.225; }
++.markdown-body h3 { font-size: 1.5em; line-height: 1.43; }
++.markdown-body h4 { font-size: 1.25em; }
++.markdown-body h5, .markdown-body h6 { font-size: 1em; }
++.markdown-body h1, .markdown-body h2 { padding-bottom: 0.3em; border-bottom: 1px solid var(--heading-border); }
++.markdown-body p, .markdown-body blockquote, .markdown-body ul,
++.markdown-body ol, .markdown-body table, .markdown-body .katex-display { margin: 0.8em 0; }
++.markdown-body ul, .markdown-body ol { padding-left: 30px; }
++.markdown-body ul ul, .markdown-body ul ol, .markdown-body ol ul, .markdown-body ol ol { margin-top: 0; margin-bottom: 0; }
++.markdown-body blockquote { border-left: 4px solid var(--border); padding: 0 15px; }
++.markdown-body blockquote > :first-child { margin-top: 0; }
++.markdown-body blockquote > :last-child { margin-bottom: 0; }
++.markdown-body table { border-collapse: collapse; border-spacing: 0; max-width: 100%; }
++.markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 6px 13px; }
++.markdown-body th { font-weight: 700; }
++.markdown-body pre, .markdown-body code {
++  font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
++  font-size: 0.9em;
++  border: 1px solid var(--code-border);
++  border-radius: 3px;
++}
++.markdown-body code { padding: 0 2px; }
++.markdown-body pre { margin: 15px 0; padding: 8px 10px 6px; overflow-x: auto; }
++.markdown-body pre code { font-size: 1em; padding: 0; border: 0; border-radius: 0; background: transparent; }
++.markdown-body img { max-width: 100%; height: auto; }
++.markdown-body .katex-display { overflow-x: auto; overflow-y: hidden; }
++.markdown-body hr { margin: 1rem 0; border: 0; border-top: 1px solid var(--border); }
++.markdown-body .task-list-item { list-style-type: none; }
++.markdown-body .task-list-item-checkbox { margin-left: -20px; margin-right: 6px; }
++.markdown-body .image-placeholder { display: inline-block; max-width: 100%; padding: 4px 8px; border: 1px dashed var(--border); border-radius: 3px; overflow-wrap: anywhere; }
++.markdown-body .math-error { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+--- /dev/null
++++ web/styles/palette.css
+@@ -0,0 +1,45 @@
++:root, .markdown-body, .markdown-body[data-color-scheme="light"] {
++  --body-bg: #ffffff;
++  --body-fg: #333333;
++  --link: #4183c4;
++  --heading-border: #eeeeee;
++  --border: #dfe2e5;
++  --muted: #777777;
++  --code-border: #e7eaed;
++  --block-bg: #f8f8f8;
++  --inline-bg: #f3f4f4;
++  --error: #b42318;
++  --syntax-keyword: #a626a4;
++  --syntax-string: #4078f2;
++  --syntax-number: #986801;
++}
++@media (prefers-color-scheme: dark) {
++  :root, .markdown-body:not([data-color-scheme="light"]) {
++    --body-bg: #1e1e1e;
++    --body-fg: #dddddd;
++    --link: #77b7f1;
++    --heading-border: #3d4147;
++    --border: #454a50;
++    --muted: #aaaaaa;
++    --code-border: #454a50;
++    --block-bg: #282b30;
++    --inline-bg: #303338;
++    --error: #ff9b90;
++    --syntax-keyword: #c792ea;
++    --syntax-string: #addb67;
++    --syntax-number: #f5b96a;
++  }
++}
++body, .markdown-body { color: var(--body-fg); background: var(--body-bg); }
++.markdown-body a { color: var(--link); text-decoration: none; }
++.markdown-body a:hover { text-decoration: underline; }
++.markdown-body blockquote { color: var(--muted); }
++.markdown-body th, .markdown-body tr:nth-child(even) { background: var(--block-bg); }
++.markdown-body pre { background: var(--block-bg); }
++.markdown-body code { background: var(--inline-bg); }
++.markdown-body .image-placeholder { color: var(--muted); }
++.markdown-body .missing-image, .markdown-body .math-error { color: var(--error); }
++.markdown-body .hljs-keyword, .markdown-body .hljs-selector-tag, .markdown-body .hljs-literal { color: var(--syntax-keyword); }
++.markdown-body .hljs-string, .markdown-body .hljs-title, .markdown-body .hljs-attr { color: var(--syntax-string); }
++.markdown-body .hljs-number, .markdown-body .hljs-symbol { color: var(--syntax-number); }
++.markdown-body .hljs-comment, .markdown-body .hljs-quote { color: var(--muted); font-style: italic; }
+
+--- /dev/null
++++ web/styles/print.css
+@@ -0,0 +1,35 @@
++/* Native NSPrintInfo owns the physical 20 mm margins. No CSS @page margin. */
++@page { size: A4 portrait; }
++@media print {
++  html { font-size: 13px; }
++  :root, .markdown-body, .markdown-body:not([data-color-scheme="light"]) {
++    --body-bg: #ffffff;
++    --body-fg: #333333;
++    --link: #4183c4;
++    --heading-border: #eeeeee;
++    --border: #dfe2e5;
++    --muted: #777777;
++    --code-border: #e7eaed;
++    --block-bg: #f8f8f8;
++    --inline-bg: #f3f4f4;
++    --error: #b42318;
++    --syntax-keyword: #a626a4;
++    --syntax-string: #4078f2;
++    --syntax-number: #986801;
++  }
++  html, body { margin: 0; padding: 0; background: #ffffff; }
++  .markdown-body { width: 100%; max-width: none; margin: 0; padding: 0; color: #333333; background: #ffffff; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
++  .markdown-body h1, .markdown-body h2, .markdown-body h3,
++  .markdown-body h4, .markdown-body h5, .markdown-body h6 { break-after: avoid-page; }
++  .markdown-body p { orphans: 3; widows: 3; }
++  .markdown-body pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; overflow: visible; break-inside: auto; }
++  .markdown-body pre.short-code { break-inside: avoid-page; }
++  .markdown-body pre code { white-space: inherit; overflow-wrap: inherit; word-break: inherit; }
++  .markdown-body table { width: 100%; table-layout: fixed; break-inside: auto; }
++  .markdown-body th, .markdown-body td { overflow-wrap: anywhere; word-break: break-word; }
++  .markdown-body tr { break-inside: avoid-page; }
++  .markdown-body thead { display: table-header-group; }
++  .markdown-body img { max-height: 257mm; object-fit: contain; break-inside: avoid-page; }
++  .markdown-body .katex-display { max-width: 100%; overflow: visible; break-inside: avoid-page; }
++  .markdown-body .katex-display > .katex { white-space: normal; }
++}
+
+--- /dev/null
++++ web/styles/fonts.css
+@@ -0,0 +1,5 @@
++/* Open Sans, SIL OFL 1.1. Font files and full license copied from pinned Fontsource. */
++@font-face { font-family: "Open Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/open-sans-latin-400-normal.woff2") format("woff2"); }
++@font-face { font-family: "Open Sans"; font-style: italic; font-weight: 400; font-display: swap; src: url("../fonts/open-sans-latin-400-italic.woff2") format("woff2"); }
++@font-face { font-family: "Open Sans"; font-style: normal; font-weight: 700; font-display: swap; src: url("../fonts/open-sans-latin-700-normal.woff2") format("woff2"); }
++@font-face { font-family: "Open Sans"; font-style: italic; font-weight: 700; font-display: swap; src: url("../fonts/open-sans-latin-700-italic.woff2") format("woff2"); }
+
+--- /dev/null
++++ scripts/build-web.mjs
+@@ -0,0 +1,65 @@
++import path from 'node:path';
++import { fileURLToPath, pathToFileURL } from 'node:url';
++import { access, copyFile, cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
++import { build } from 'esbuild';
++
++const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
++const dependency = name => path.join(root, 'node_modules', name);
++
++/** Main's editor entry takes precedence without any changes to this build script. */
++export async function selectEntry(directory = path.join(root, 'web/src')) {
++  const main = path.join(directory, 'main.ts');
++  try { await access(main); return main; }
++  catch (error) { if (error.code !== 'ENOENT') throw error; }
++  return path.join(directory, 'render-entry.ts');
++}
++
++/** Reusable native/editor packaging hook. Does not erase the destination. */
++export async function copyRendererResources(outdir) {
++  await mkdir(outdir, { recursive: true });
++  for (const name of ['styles', 'fonts', 'licenses']) await mkdir(path.join(outdir, name), { recursive: true });
++  await copyFile(path.join(root, 'web/index.html'), path.join(outdir, 'index.html'));
++  await cp(path.join(root, 'web/styles'), path.join(outdir, 'styles'), { recursive: true });
++  for (const weight of [400, 700]) for (const style of ['normal', 'italic']) {
++    const name = `open-sans-latin-${weight}-${style}.woff2`;
++    await copyFile(path.join(dependency('@fontsource/open-sans'), 'files', name), path.join(outdir, 'fonts', name));
++  }
++  for (const name of await readdir(path.join(dependency('katex'), 'dist/fonts'))) {
++    await copyFile(path.join(dependency('katex'), 'dist/fonts', name), path.join(outdir, 'fonts', name));
++  }
++  const katexCSS = await readFile(path.join(dependency('katex'), 'dist/katex.min.css'), 'utf8');
++  await writeFile(path.join(outdir, 'styles/katex.css'), katexCSS.replaceAll('url(fonts/', 'url(../fonts/'));
++  const notices = [
++    ['@fontsource/open-sans', 'LICENSE', 'Open-Sans-OFL.txt'],
++    ['katex', 'LICENSE', 'KaTeX-LICENSE.txt'],
++    ['markdown-it', 'LICENSE', 'markdown-it-LICENSE.txt'],
++    ['markdown-it-task-lists', 'LICENSE', 'markdown-it-task-lists-LICENSE.txt'],
++    ['highlight.js', 'LICENSE', 'highlight.js-LICENSE.txt'],
++  ];
++  for (const [name, license, output] of notices) await copyFile(path.join(dependency(name), license), path.join(outdir, 'licenses', output));
++}
++
++const rawCSS = {
++  name: 'clipboard-styles',
++  setup(bundle) {
++    bundle.onResolve({ filter: /\.css\?raw$/ }, args => ({ path: path.resolve(args.resolveDir, args.path.slice(0, -4)), namespace: 'raw-css' }));
++    bundle.onLoad({ filter: /.*/, namespace: 'raw-css' }, async args => ({ contents: `export default ${JSON.stringify(await readFile(args.path, 'utf8'))}`, loader: 'js' }));
++  },
++};
++
++/** npm run build:web → build/web/{index.html,app.js,renderer.js,styles,fonts,licenses}.
++ * Build-time dependency resolution only; output has no node_modules/runtime network need.
++ */
++export async function buildWeb({ outdir = path.join(root, 'build/web'), entry } = {}) {
++  await copyRendererResources(outdir);
++  // Keep a stable optional app stylesheet URL even if the selected entry has no CSS.
++  await writeFile(path.join(outdir, 'app.css'), '/* Entry-specific styles, when present. */\n');
++  const common = { bundle: true, format: 'esm', platform: 'browser', target: ['safari17', 'chrome120'], plugins: [rawCSS], legalComments: 'linked', logLevel: 'warning' };
++  await build({ ...common, entryPoints: [entry ?? await selectEntry()], outfile: path.join(outdir, 'app.js') });
++  await build({ ...common, entryPoints: [path.join(root, 'web/src/render/markdown.ts')], outfile: path.join(outdir, 'renderer.js') });
++}
++
++if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
++  await buildWeb();
++  console.log('Built offline web resources in build/web');
++}
+
+--- /dev/null
++++ scripts/build-web.d.mts
+@@ -0,0 +1,3 @@
++export function selectEntry(directory?: string): Promise<string>;
++export function copyRendererResources(outdir: string): Promise<void>;
++export function buildWeb(options?: { outdir?: string; entry?: string }): Promise<void>;
+
+--- /dev/null
++++ web/test/render.test.ts
+@@ -0,0 +1,160 @@
++import { describe, expect, it } from 'vitest';
++import { plainText, renderMarkdown, richClipboard } from '../src/render/markdown';
++
++describe('offline Markdown rendering', () => {
++  it('renders headings, inline formatting and nested lists', () => {
++    const { html } = renderMarkdown('# 标题\n\n**bold** *italic* ~~gone~~ `x`\n\n> quote\n\n- one\n  - two\n\n1. first\n\n---');
++    for (const fragment of ['<h1>标题</h1>', '<strong>bold</strong>', '<em>italic</em>', '<s>gone</s>', '<code>x</code>', '<blockquote>', '<ul>', '<ol>', '<hr>']) expect(html).toContain(fragment);
++  });
++
++  it('renders aligned GFM tables and disabled task checkboxes', () => {
++    const { html } = renderMarkdown('| Left | Right |\n| :--- | ---: |\n| a | b |\n\n- [x] done\n- [ ] todo');
++    expect(html).toContain('<table>');
++    expect(html).toContain('text-align:right');
++    expect(html).toMatch(/<input[^>]*checked[^>]*>/);
++    expect(html).toMatch(/<input[^>]*disabled[^>]*>/);
++  });
++
++  it('highlights known code and safely escapes unknown language code', () => {
++    const { html } = renderMarkdown('```javascript\nconst x = 1;\n```\n\n```not-a-language\n<script>x</script>\n```');
++    expect(html).toContain('hljs-keyword');
++    expect(html).toContain('&lt;script&gt;x&lt;/script&gt;');
++    expect(html).not.toContain('<script>');
++  });
++
++  it('shows unsupported HTML as inert source text', () => {
++    const { html } = renderMarkdown('<script>alert(1)</script>\n\n<img src="https://evil.test/x" onerror="alert(1)">\n\n<iframe src="https://evil.test"></iframe>');
++    expect(html).toContain('&lt;script&gt;');
++    expect(html).toContain('&lt;img');
++    expect(html).not.toMatch(/<(script|img|iframe)\b/);
++  });
++
++  it('keeps safe inline/reference links and rejects executable schemes', () => {
++    const { html } = renderMarkdown('[safe](https://example.org) [mail](mailto:a@example.org) [ref][id]\n\n[id]: https://example.org/ref\n\n[bad](javascript:alert%281%29) [data](data:text/html,boom)');
++    expect(html).toContain('href="https://example.org"');
++    expect(html).toContain('href="mailto:a@example.org"');
++    expect(html).toContain('href="https://example.org/ref"');
++    expect(html).not.toMatch(/href="(?:javascript|data):/);
++  });
++
++  it('uses visible remote placeholders without export-blocking issues', () => {
++    const { html, issues } = renderMarkdown('![remote](https://evil.test/a.png) ![other](//evil.test/b.png)');
++    expect(html).toContain('https://evil.test/a.png');
++    expect(html).toContain('remote-image');
++    expect(html).not.toContain('<img');
++    expect(issues).toEqual([]);
++  });
++
++  it('requires an explicit resolver and reports exact missing local image offsets', () => {
++    const source = '😀 中文\n\n![图](<图片/带 空格.png>)';
++    const result = renderMarkdown(source);
++    expect(result.html).toContain('图片/带 空格.png');
++    expect(result.issues).toEqual([{ kind: 'image', message: expect.any(String), from: 7, to: 26 }]);
++    expect(source.slice(result.issues[0].from, result.issues[0].to)).toBe('![图](<图片/带 空格.png>)');
++  });
++
++  it('passes decoded Chinese/space paths to the resolver and only emits its local URL', () => {
++    const result = renderMarkdown('![图](%E5%9B%BE%E7%89%87/a%20b.png)', {
++      resolveImage: path => path === '图片/a b.png' ? 'ret-resource://document/42' : null,
++    });
++    expect(result.html).toContain('src="ret-resource://document/42"');
++    expect(result.issues).toEqual([]);
++  });
++
++  it('does not trust remote resolver outputs or resolve remote Markdown images', () => {
++    const { html, issues } = renderMarkdown('![a](a.png) ![b](https://remote.test/b)', { resolveImage: () => 'https://remote.test/a' });
++    expect(html).not.toContain('<img');
++    expect(issues).toHaveLength(1);
++  });
++
++  it('renders inline and display math while leaving code and escaped dollars literal', () => {
++    const result = renderMarkdown('inline $x^2$ and \\$5\n\n$$\n\\frac{a}{b}\n$$\n\n`$code$`\n\n```text\n$alsoCode$\n```');
++    expect(result.html).toContain('class="katex"');
++    expect(result.html).toContain('katex-display');
++    expect(result.html).toContain('<code>$code$</code>');
++    expect(result.html).toContain('$alsoCode$');
++    expect(result.issues).toEqual([]);
++  });
++
++  it('preserves incorrect formulas and locates both repeated occurrences', () => {
++    const source = '😀 $\\badcommand$ and $\\badcommand$';
++    const result = renderMarkdown(source);
++    expect(result.html).toContain('$\\badcommand$');
++    expect(result.issues.map(({ kind, from, to }) => ({ kind, from, to }))).toEqual([
++      { kind: 'math', from: 3, to: 16 }, { kind: 'math', from: 21, to: 34 },
++    ]);
++    expect(result.issues[0].message).toMatch(/badcommand/);
++  });
++
++  it('preserves unclosed inline and block formulas with precise source ranges', () => {
++    const source = 'prefix $unfinished\n\n$$\nx + y';
++    const { html, issues } = renderMarkdown(source);
++    expect(html).toContain('$unfinished');
++    expect(html).toContain('$$');
++    expect(issues.map(({ from, to }) => ({ from, to }))).toEqual([{ from: 7, to: 18 }, { from: 20, to: 28 }]);
++  });
++
++  it('locates errors within nested blocks, tables and CRLF input in UTF-16', () => {
++    const source = '> 😀 $\\oops$\r\n\r\n| a |\r\n| - |\r\n| $\\oops$ |\r\n\r\n- ![图](missing.png)';
++    const result = renderMarkdown(source);
++    expect(result.issues.map(issue => source.slice(issue.from, issue.to))).toEqual(['$\\oops$', '$\\oops$', '![图](missing.png)']);
++    expect(result.issues[0].from).toBe(5);
++    expect(new Set(result.issues.map(issue => issue.from)).size).toBe(3);
++  });
++
++  it('disallows trusted KaTeX HTML and remote-image commands', () => {
++    const result = renderMarkdown('$\\href{javascript:alert(1)}{x}$ $\\includegraphics{https://evil.test/a.png}$');
++    expect(result.html).toContain('class="katex"');
++    expect(result.html).not.toMatch(/<a\b|<img\b/);
++    expect(result.html).not.toContain('href="javascript:');
++  });
++
++  it('provides readable plain text and rich clipboard fallback without changing source', () => {
++    const source = '# Heading\n\n**bold** [site](https://example.org) ![diagram](a.png)\n\n- one\n- two\n\n`code` and $x^2$';
++    expect(plainText(source)).toBe('Heading\n\nbold site diagram\n\n- one\n- two\n\ncode and x^2');
++    const clipboard = richClipboard(source);
++    expect(clipboard.html).toContain('<h1>Heading</h1>');
++    expect(clipboard.text).toBe('Heading\n\nbold site diagram\n\n- one\n- two\n\ncode and x^2');
++    expect(source).toContain('**bold**');
++  });
++
++  it('packages rich clipboard typography and colors without remote style resources', () => {
++    const { html } = richClipboard('# Heading\n\n**bold** $x^2$');
++    expect(html).toContain('<style>');
++    expect(html).toMatch(/font-family:\s*["']?Open Sans/);
++    expect(html).toContain('2.25em');
++    expect(html).toContain('#333333');
++    expect(html).toContain('<math');
++    expect(html).not.toMatch(/@import|url\(["']?https?:/);
++  });
++
++  it('locates reference images and repeated errors in escaped-pipe table cells', () => {
++    const source = '![图][asset]\n\n[asset]: <资源/图 1.png>\n\n| a | b |\n| - | - |\n| x\\|$\\oops$ | $\\oops$ |';
++    const result = renderMarkdown(source);
++    expect(result.issues.map(issue => source.slice(issue.from, issue.to))).toEqual(['![图][asset]', '$\\oops$', '$\\oops$']);
++    expect(result.issues[1].from).toBe(source.indexOf('$\\oops$'));
++    expect(result.issues[2].from).toBe(source.lastIndexOf('$\\oops$'));
++  });
++
++  it('keeps formulas and images in raw HTML inert', () => {
++    const result = renderMarkdown('<img title="$\\oops$" src="https://never.test/a">');
++    expect(result.html).toContain('&lt;img');
++    expect(result.html).not.toContain('math-error');
++    expect(result.issues).toEqual([]);
++  });
++
++  it('retains TeX as plain text for an unclosed formula', () => {
++    expect(plainText('before $unfinished')).toBe('before $unfinished');
++  });
++
++  it('resolves explicit local file destinations', () => {
++    const local = renderMarkdown('![local](file:///tmp/a.png)', { resolveImage: () => 'file:///tmp/a.png' });
++    expect(local.html).toContain('src="file:///tmp/a.png"');
++    expect(local.issues).toEqual([]);
++  });
++  it('rejects network file authorities returned by a resolver', () => {
++    const network = renderMarkdown('![local](a.png)', { resolveImage: () => 'file://remote-host/share/a.png' });
++    expect(network.html).not.toContain('<img');
++    expect(network.issues).toHaveLength(1);
++  });
++});
+
+--- /dev/null
++++ web/test/build.test.ts
+@@ -0,0 +1,33 @@
++import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
++import path from 'node:path';
++import { afterEach, expect, it } from 'vitest';
++
++const temporary: string[] = [];
++afterEach(async () => { for (const directory of temporary.splice(0)) await rm(directory, { recursive: true, force: true }); });
++
++it('builds portable offline renderer resources including four Open Sans faces and font licenses', async () => {
++  const directory = await mkdtemp('/private/tmp/ret-render-build-');
++  temporary.push(directory);
++  const { buildWeb } = await import('../../scripts/build-web.mjs');
++  await buildWeb({ outdir: directory, entry: path.resolve('web/src/render-entry.ts') });
++  const files = await readdir(directory);
++  expect(files).toEqual(expect.arrayContaining(['index.html', 'app.js', 'renderer.js', 'styles', 'fonts', 'licenses']));
++  expect((await readdir(path.join(directory, 'fonts'))).filter(file => file.startsWith('open-sans-'))).toHaveLength(4);
++  expect((await readFile(path.join(directory, 'licenses', 'Open-Sans-OFL.txt'), 'utf8'))).toContain('SIL OPEN FONT LICENSE');
++  expect((await readFile(path.join(directory, 'licenses', 'KaTeX-LICENSE.txt'), 'utf8'))).toContain('Permission is hereby granted');
++  const css = await readFile(path.join(directory, 'styles', 'katex.css'), 'utf8');
++  expect(css).toContain('../fonts/KaTeX');
++  expect(css).not.toMatch(/https?:\/\//);
++  const bundle = await readFile(path.join(directory, 'renderer.js'), 'utf8');
++  expect(bundle).toContain('renderMarkdown');
++});
++
++it('selects main.ts when present and uses the renderer fallback otherwise', async () => {
++  const directory = await mkdtemp('/private/tmp/ret-render-entry-');
++  temporary.push(directory);
++  const { selectEntry } = await import('../../scripts/build-web.mjs');
++  await writeFile(path.join(directory, 'render-entry.ts'), 'export {};');
++  expect(await selectEntry(directory)).toBe(path.join(directory, 'render-entry.ts'));
++  await writeFile(path.join(directory, 'main.ts'), 'export {};');
++  expect(await selectEntry(directory)).toBe(path.join(directory, 'main.ts'));
++});
+
+--- /dev/null
++++ web/test/render-browser.mjs
+@@ -0,0 +1,80 @@
++import assert from 'node:assert/strict';
++import { createServer } from 'node:http';
++import { readFile, mkdir } from 'node:fs/promises';
++import path from 'node:path';
++import { chromium } from 'playwright';
++
++// Run after build:web. No fixtures are generated or modified by this check.
++const root = path.resolve('build/web');
++const contentTypes = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf' };
++const server = createServer(async (request, response) => {
++  const relative = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
++  const fixture = relative === '/renderer-check.html';
++  const file = fixture ? path.resolve('web/test/renderer-check.html') : path.resolve(root, `.${relative === '/' ? '/index.html' : relative}`);
++  if (!fixture && !file.startsWith(`${root}/`)) { response.writeHead(403).end(); return; }
++  try {
++    response.setHeader('Content-Type', contentTypes[path.extname(file)] || 'application/octet-stream');
++    response.end(await readFile(file));
++  } catch { response.writeHead(404).end(); }
++});
++await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
++const origin = `http://127.0.0.1:${server.address().port}`;
++const browser = await chromium.launch({ executablePath: process.env.RET_CHROMIUM || `${process.env.HOME}/Library/Caches/ms-playwright/chromium-1228/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing` });
++try {
++  const page = await browser.newPage();
++  const external = [], errors = [], failed = [];
++  page.on('pageerror', error => errors.push(error.message));
++  page.on('response', response => { if (response.status() >= 400) failed.push(response.url()); });
++  await page.route('**/*', route => {
++    if (!route.request().url().startsWith(origin)) { external.push(route.request().url()); return route.abort(); }
++    return route.continue();
++  });
++  await page.goto(`${origin}/renderer-check.html`);
++  await page.evaluate(async () => {
++    const { renderMarkdown } = await import('/renderer.js');
++    const sample = '# Heading\n\nBody **bold** *italic* ***both*** $x^2$.\n\n> quote\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n```js\nconst x = 1;\n```\n\n![remote](https://never.test/a.png)';
++    document.querySelector('.markdown-body').innerHTML = renderMarkdown(sample).html;
++    await document.fonts.ready;
++  });
++  for (const [width, maxWidth] of [[1000, 860], [1399, 860], [1400, 1024], [1799, 1024], [1800, 1200]]) {
++    await page.setViewportSize({ width, height: 1000 });
++    const style = await page.locator('.markdown-body').evaluate(element => {
++      const s = getComputedStyle(element), h = getComputedStyle(element.querySelector('h1'));
++      return { width: element.getBoundingClientRect().width, padding: s.paddingLeft, bottom: s.paddingBottom, fontSize: s.fontSize, lineHeight: s.lineHeight, heading: h.fontSize, color: s.color };
++    });
++    assert.equal(style.width, maxWidth);
++    assert.equal(style.padding, '30px');
++    assert.equal(style.bottom, '100px');
++    assert.equal(style.fontSize, '16px');
++    assert.equal(style.lineHeight, '25.6px');
++    assert.equal(style.heading, '36px');
++    assert.equal(style.color, 'rgb(51, 51, 51)');
++  }
++  assert.equal(await page.evaluate(() => document.fonts.check('16px "Open Sans"')), true);
++  assert.equal(await page.evaluate(() => document.fonts.check('italic 700 16px "Open Sans"')), true);
++  assert.equal(await page.evaluate(() => [...document.fonts].some(font => font.family.includes('KaTeX') && font.status === 'loaded')), true);
++  await page.emulateMedia({ colorScheme: 'dark' });
++  assert.notEqual(await page.locator('.markdown-body').evaluate(element => getComputedStyle(element).color), 'rgb(51, 51, 51)');
++  await page.emulateMedia({ media: 'print', colorScheme: 'dark' });
++  const print = await page.locator('.markdown-body').evaluate(element => ({ padding: getComputedStyle(element).padding, color: getComputedStyle(element).color, font: getComputedStyle(element).fontSize }));
++  assert.deepEqual(print, { padding: '0px', color: 'rgb(51, 51, 51)', font: '13px' });
++  assert.equal(await page.locator('pre').evaluate(element => getComputedStyle(element).breakInside), 'avoid-page');
++  await page.evaluate(async () => {
++    const { renderMarkdown } = await import('/renderer.js');
++    document.querySelector('.markdown-body').innerHTML = renderMarkdown('```text\n' + ('verylongidentifier'.repeat(100) + '\n').repeat(200) + '```\n\n| A | B |\n| - | - |\n' + ('| ' + 'word'.repeat(100) + ' | cell |\n').repeat(120)).html;
++  });
++  const overflows = await page.locator('pre, table').evaluateAll(elements => elements.filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.tagName));
++  assert.deepEqual(overflows, []);
++  const breaks = await page.locator('pre, table').evaluateAll(elements => elements.map(element => getComputedStyle(element).breakInside));
++  assert.deepEqual(breaks, ['auto', 'auto']);
++  await mkdir('/private/tmp/ret-renderer-checks', { recursive: true });
++  const pdf = await page.pdf({ path: '/private/tmp/ret-renderer-checks/overflow.pdf', format: 'A4', margin: { top: '20mm', bottom: '20mm', left: '20mm', right: '20mm' }, displayHeaderFooter: false, printBackground: true });
++  assert.ok(pdf.byteLength > 10000);
++  assert.deepEqual(external, []);
++  assert.deepEqual(errors, []);
++  assert.deepEqual(failed, []);
++  console.log('PASS browser: five width boundaries, offline fonts/resources, dark/print colors, long-code/table wrapping and multi-page PDF');
++} finally {
++  await browser.close();
++  await new Promise(resolve => server.close(resolve));
++}
+
+--- /dev/null
++++ web/test/renderer-check.html
+@@ -0,0 +1,14 @@
++<!doctype html>
++<html lang="zh-CN">
++<head>
++  <meta charset="utf-8">
++  <meta name="viewport" content="width=device-width, initial-scale=1">
++  <title>Renderer verification</title>
++  <link rel="stylesheet" href="/styles/fonts.css">
++  <link rel="stylesheet" href="/styles/katex.css">
++  <link rel="stylesheet" href="/styles/typography.css">
++  <link rel="stylesheet" href="/styles/palette.css">
++  <link rel="stylesheet" href="/styles/print.css">
++</head>
++<body><main class="markdown-body"></main></body>
++</html>
+

@@ -1,0 +1,35 @@
+/* Native NSPrintInfo owns the physical 20 mm margins. No CSS @page margin. */
+@page { size: A4 portrait; }
+@media print {
+  html { font-size: 13px; }
+  :root, .markdown-body, .markdown-body:not([data-color-scheme="light"]) {
+    --body-bg: #ffffff;
+    --body-fg: #333333;
+    --link: #4183c4;
+    --heading-border: #eeeeee;
+    --border: #dfe2e5;
+    --muted: #777777;
+    --code-border: #e7eaed;
+    --block-bg: #f8f8f8;
+    --inline-bg: #f3f4f4;
+    --error: #b42318;
+    --syntax-keyword: #a626a4;
+    --syntax-string: #4078f2;
+    --syntax-number: #986801;
+  }
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  .markdown-body { width: 100%; max-width: none; margin: 0; padding: 0; color: #333333; background: #ffffff; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  .markdown-body h1, .markdown-body h2, .markdown-body h3,
+  .markdown-body h4, .markdown-body h5, .markdown-body h6 { break-after: avoid-page; }
+  .markdown-body p { orphans: 3; widows: 3; }
+  .markdown-body pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; overflow: visible; break-inside: auto; }
+  .markdown-body pre.short-code { break-inside: avoid-page; }
+  .markdown-body pre code { white-space: inherit; overflow-wrap: inherit; word-break: inherit; }
+  .markdown-body table { width: 100%; table-layout: fixed; break-inside: auto; }
+  .markdown-body th, .markdown-body td { overflow-wrap: anywhere; word-break: break-word; }
+  .markdown-body tr { break-inside: avoid-page; }
+  .markdown-body thead { display: table-header-group; }
+  .markdown-body img { max-height: 257mm; object-fit: contain; break-inside: avoid-page; }
+  .markdown-body .katex-display { max-width: 100%; overflow: visible; break-inside: avoid-page; }
+  .markdown-body .katex-display > .katex { white-space: normal; }
+}
