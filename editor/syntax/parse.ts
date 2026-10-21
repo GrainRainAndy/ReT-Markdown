@@ -1,10 +1,10 @@
-import { fromMarkdown } from 'mdast-util-from-markdown';
+import { fromMarkdown, type CompileContext, type Extension as MdastExtension } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { mathFromMarkdown } from 'mdast-util-math';
 import { gfm } from 'micromark-extension-gfm';
 import { math } from 'micromark-extension-math';
 import type { Nodes } from 'mdast';
-import type { Construct, Extension, State } from 'micromark-util-types';
+import type { Construct, Extension, State, Token } from 'micromark-util-types';
 import type { SourceRange } from '../core/types';
 
 export interface SyntaxNode extends SourceRange {
@@ -13,6 +13,8 @@ export interface SyntaxNode extends SourceRange {
   type: string;
   raw: string;
   value?: string;
+  /** Actual inline-code data tokens; excludes fences, padding and container prefixes. */
+  contentRanges?: SourceRange[];
   attributes: Readonly<Record<string, unknown>>;
   children: SyntaxNode[];
 }
@@ -39,15 +41,14 @@ function mathDialect(source: string): Extension {
         end++;
       }
       if (end >= source.length || /\s/.test(source[end - 1]!) || /[\d$]/.test(source[end + 1] ?? '')) return nok;
-      let position = start;
       const content: State = code => {
-        if (position === end) {
+        if (code === 36 && this.now().offset === end) {
           effects.exit('mathTextData'); effects.enter('mathTextSequence'); effects.consume(code); effects.exit('mathTextSequence'); effects.exit('mathText'); return ok;
         }
-        effects.consume(code); position++; return content;
+        effects.consume(code); return content;
       };
       return code => {
-        effects.enter('mathText'); effects.enter('mathTextSequence'); effects.consume(code); effects.exit('mathTextSequence'); effects.enter('mathTextData'); position++; return content;
+        effects.enter('mathText'); effects.enter('mathTextSequence'); effects.consume(code); effects.exit('mathTextSequence'); effects.enter('mathTextData'); return content;
       };
     },
   };
@@ -56,7 +57,19 @@ function mathDialect(source: string): Extension {
     text: { 36: inline },
     flow: { 36: { ...upstreamFlow, tokenize(effects, ok, nok) {
       if (!/^\$\$[\t ]*(?:\r\n|\r|\n|$)/.test(source.slice(this.now().offset))) return nok;
-      return upstreamFlow.tokenize.call(this, effects, ok, nok);
+      const context = this;
+      return upstreamFlow.tokenize.call(this, {
+        ...effects,
+        attempt(construct, success, failure) {
+          // Upstream attempts a closing fence at a non-lazy line start, and
+          // continuation at an EOL. A longer standalone dollar line is body
+          // text in this dialect, so its closing attempt must fail untouched.
+          return code => {
+            if (failure && /^[ \t]*\${3,}[ \t]*(?:\r\n|\r|\n|$)/.test(source.slice(context.now().offset))) return failure(code);
+            return effects.attempt(construct, success, failure)(code);
+          };
+        },
+      }, ok, nok);
     } } },
   };
 }
@@ -64,7 +77,34 @@ function mathDialect(source: string): Extension {
 export function parseDocument(source: string): ParsedDocument {
   const bom = source.startsWith('\uFEFF') ? 1 : 0;
   const input = source.slice(bom);
-  const ast = fromMarkdown(source, { extensions: [gfm(), { disable: { null: ['gfmFootnoteDefinition', 'gfmFootnoteCall', 'gfmPotentialFootnoteCall'] } }, mathDialect(input)], mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()] });
+  const fences = new Map<number, SourceRange[]>();
+  const codeRanges = new Map<number, { ranges: SourceRange[]; table: boolean }>();
+  function recordCodeRange(this: CompileContext, token: Token): void {
+    const code = [...this.stack].reverse().find(node => node.type === 'inlineCode');
+    const offset = code?.position?.start.offset;
+    if (offset === undefined) return;
+    const entry = codeRanges.get(offset) ?? { ranges: [], table: this.stack.some(node => node.type === 'tableCell') };
+    entry.ranges.push({ from: token.start.offset + bom, to: token.end.offset + bom });
+    codeRanges.set(offset, entry);
+  }
+  function recordFence(this: CompileContext, token: Token): void {
+    const literal = [...this.stack].reverse().find(node => node.type === 'code' || node.type === 'math');
+    const offset = literal?.position?.start.offset;
+    if (offset === undefined) return;
+    const ranges = fences.get(offset) ?? [];
+    ranges.push({ from: token.start.offset + bom, to: token.end.offset + bom });
+    fences.set(offset, ranges);
+  }
+  const provenance: MdastExtension = { enter: {
+    codeTextData(token) {
+      recordCodeRange.call(this, token);
+      this.config.enter.data!.call(this, token);
+    },
+    lineEnding: recordCodeRange,
+    codeFencedFence: recordFence,
+    mathFlowFence: recordFence,
+  } };
+  const ast = fromMarkdown(source, { extensions: [gfm(), { disable: { null: ['gfmFootnoteDefinition', 'gfmFootnoteCall', 'gfmPotentialFootnoteCall'] } }, mathDialect(input)], mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown(), provenance] });
   let nextId = 0;
   const convert = (node: Nodes): SyntaxNode => {
     const from = node.type === 'root' ? 0 : (node.position?.start.offset ?? 0) + bom;
@@ -73,17 +113,18 @@ export function parseDocument(source: string): ParsedDocument {
     const attributes: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(node)) if (!['type', 'position', 'children', 'value', 'data'].includes(key)) attributes[key] = value;
     if (node.type === 'code' || node.type === 'math') {
-      const opening = /^(?:[ \t]*)(`{3,}|~{3,}|\$\$)/.exec(raw);
+      const ranges = fences.get(from - bom);
+      const opening = ranges?.[0];
       if (opening) {
-        const fence = opening[1]!;
-        const lines = raw.split(/\r\n|\r|\n/);
-        while (lines.at(-1) === '') lines.pop();
-        const last = lines.at(-1) ?? '';
-        attributes.closed = lines.length > 1 && new RegExp('^[ >\\t]*' + (fence[0] === '$' ? '\\$\\$' : fence[0] + '{' + fence.length + ',}') + '[ \\t]*$').test(last);
+        const fence = /^[ \t]*(`{3,}|~{3,}|\$\$)/.exec(source.slice(opening.from, opening.to))?.[1];
+        attributes.closed = ranges!.length > 1;
         attributes.fence = fence;
       } else attributes.closed = true;
     }
+    const code = node.type === 'inlineCode' ? codeRanges.get(from - bom) : undefined;
+    if (code) attributes.gfmTableCode = code.table;
     return {
+      ...(code ? { contentRanges: code.ranges } : {}),
       id: `n${nextId++}`, type: node.type === 'html' ? 'raw' : node.type, from, to, raw,
       ...('value' in node ? { value: node.value } : {}), attributes,
       children: 'children' in node ? node.children.map(convert) : [],

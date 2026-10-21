@@ -50,6 +50,25 @@ export function mapSemanticText(raw: string, sourceFrom: number, value: string, 
   return { text: expected, mapping: { from: segments[0]?.from ?? sourceFrom, to: segments.at(-1)?.to ?? sourceFrom, textLength: expected.length, segments } };
 }
 
+/** Project only tokenizer-confirmed code data; validate against parser semantics. */
+export function mapInlineCode(source: string, ranges: readonly SourceRange[], value: string, table: boolean): MappedText {
+  let text = '';
+  const segments: TextSegment[] = [];
+  for (const range of ranges) {
+    const mapped = mapText(source.slice(range.from, range.to), range.from);
+    for (const segment of mapped.mapping.segments) {
+      const raw = source.slice(segment.from, segment.to);
+      const decoded = /^\r\n$|^[\r\n]$/.test(raw) ? ' ' : table && raw === '\\|' ? '|' : raw;
+      segments.push({ from: segment.from, to: segment.to, textFrom: text.length, textTo: text.length + decoded.length });
+      text += decoded;
+    }
+  }
+  if (text !== value.replace(/\r\n?|\n/g, ' ')) throw new MappingError('Inline code semantics cannot be mapped safely');
+  const from = segments[0]?.from ?? ranges[0]?.from ?? 0;
+  const to = segments.at(-1)?.to ?? from;
+  return { text, mapping: { from, to, textLength: text.length, segments } };
+}
+
 export function mapTextToSource(mapping: TextMapping, offset: number, affinity: Affinity = 'after'): number {
   if (!Number.isInteger(offset) || offset < 0 || offset > mapping.textLength) throw new RangeError('Text offset out of range');
   const candidates: number[] = [];

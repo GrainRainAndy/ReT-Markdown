@@ -1,5 +1,5 @@
 import { parseDocument, type ParsedDocument, type SyntaxNode } from './parse';
-import { MappingError, mapSemanticText, mapText, type TextMapping } from './mapping';
+import { MappingError, mapInlineCode, mapSemanticText, mapText, type TextMapping } from './mapping';
 import type { SourceRange } from '../core/types';
 
 export interface ProjectionNode extends SourceRange {
@@ -20,17 +20,6 @@ export function buildProjection(source: string): DocumentProjection {
     let content = node.raw;
     let from = node.from;
     if (node.type === 'inlineMath') { content = content.slice(1, -1); from++; }
-    if (node.type === 'inlineCode') {
-      const fence = /^`+/.exec(content)?.[0].length ?? 0;
-      content = content.slice(fence, -fence);
-      from += fence;
-      const normalized = content.replace(/\r\n?|\n/g, ' ');
-      if (normalized.startsWith(' ') && normalized.endsWith(' ') && /[^ ]/.test(normalized)) {
-        const leading = /^\r\n|^\r|^\n|^ /.exec(content)![0].length;
-        const trailing = /\r\n$|\r$|\n$| $/.exec(content)![0].length;
-        content = content.slice(leading, -trailing); from += leading;
-      }
-    }
     if ((node.type === 'code' || node.type === 'math') && node.attributes.fence) {
       const firstEnding = /\r\n|\r|\n/.exec(content);
       const bodyStart = firstEnding ? firstEnding.index + firstEnding[0].length : content.length;
@@ -53,7 +42,7 @@ export function buildProjection(source: string): DocumentProjection {
         const extraEndings = content.split(/\r\n|\r|\n/).length - value.split('\n').length;
         mapped = mapSemanticText(content, from, value + '\n'.repeat(Math.max(0, extraEndings)), false);
       }
-      if (node.type === 'inlineCode') mapped = { ...mapped, text: mapped.text.replace(/\n/g, ' ') };
+      if (node.type === 'inlineCode' && node.value !== undefined) mapped = mapInlineCode(source, node.contentRanges ?? [], node.value, node.attributes.gfmTableCode === true);
     } catch (error) {
       if (!(error instanceof MappingError)) throw error;
       type = 'raw';

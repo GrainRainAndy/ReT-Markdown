@@ -143,3 +143,73 @@ it('falls back to a literal editable leaf when parser replacement text has no ex
   expect(leaf.text).toBe('a\u0000b');
   expect(mapTextToSource(leaf.mapping, 2)).toBe(2);
 });
+
+describe('review regressions: exact literal semantics', () => {
+  it.each(['$x\ty$', '$中\t😀$', '$x\t\ty$'])('keeps tab-containing inline math in its full UTF16 source range: %j', source => {
+    const paragraph = buildProjection(source).blocks[0]!;
+    expect(paragraph.children).toHaveLength(1);
+    const math = paragraph.children[0]!;
+    expect(math.type).toBe('inlineMath');
+    expect(math.from).toBe(0);
+    expect(math.to).toBe(source.length);
+    expect(math.raw).toBe(source);
+    expect(math.text).toBe(source.slice(1, -1));
+    expect(mapTextToSource(math.mapping, math.text!.length)).toBe(source.length - 1);
+  });
+  it('maps quote-contained multiline inline code without exposing quote markers', () => {
+    const node = buildProjection('> `a\n> b`').blocks[0]!.children[0]!.children[0]!;
+    expect(node.type).toBe('inlineCode');
+    expect(node.text).toBe('a b');
+    expect(node.mapping.from).toBe(3);
+    expect(node.mapping.to).toBe(8);
+    expect(mapTextToSource(node.mapping, 2, 'before')).toBe(5);
+    expect(mapTextToSource(node.mapping, 2, 'after')).toBe(7);
+    expect(mapSourceToText(node.mapping, 6)).toBe(2);
+  });
+  it('maps GFM escaped pipes in inline code while keeping other escapes literal', () => {
+    const node = buildProjection('| `x\\|y\\*` |\n| --- |').blocks[0]!.children[0]!.children[0]!.children[0]!;
+    expect(node.type).toBe('inlineCode');
+    expect(node.text).toBe('x|y\\*');
+    expect(mapTextToSource(node.mapping, 1)).toBe(4);
+    expect(mapTextToSource(node.mapping, 2)).toBe(6);
+    expect(mapSourceToText(node.mapping, 5, 'before')).toBe(1);
+    expect(mapSourceToText(node.mapping, 5, 'after')).toBe(2);
+  });
+  it.each([
+    ['$$\nx\n$$$\nafter', 'x\n$$$\nafter', false],
+    ['$$\nx\n$$$\nafter\n$$', 'x\n$$$\nafter\n', true],
+    ['$$\r\nx\r\n$$$\r\nafter\r\n$$', 'x\n$$$\nafter\n', true],
+  ])('keeps longer dollar lines in the math body until an exact closer: %j', (source, body, closed) => {
+    const projection = buildProjection(source);
+    expect(projection.blocks).toHaveLength(1);
+    const math = projection.blocks[0]!;
+    expect(math.type).toBe('math');
+    expect(math.raw).toBe(source);
+    expect(math.to).toBe(source.length);
+    expect(math.text).toBe(body);
+    expect(math.attributes.closed).toBe(closed);
+  });
+});
+
+it('does not mistake a literal quoted dollar line for a math closing fence', () => {
+  const node = buildProjection('$$\nx\n> $$').blocks[0]!;
+  expect(node.attributes.closed).toBe(false);
+  expect(node.text).toBe('x\n> $$');
+});
+it('keeps longer math dollar lines literal inside quote containers', () => {
+  const node = buildProjection('> $$\n> x\n> $$$\n> y\n> $$').blocks[0]!.children[0]!;
+  expect(node.type).toBe('math');
+  expect(node.attributes.closed).toBe(true);
+  expect(node.text).toBe('x\n$$$\ny\n');
+});
+it('does not mistake a literal quoted code fence for an actual closer', () => {
+  const node = buildProjection('```\nx\n> ```').blocks[0]!;
+  expect(node.attributes.closed).toBe(false);
+  expect(node.text).toBe('x\n> ```');
+});
+it('keeps fence-shaped indented code as literal content', () => {
+  const node = buildProjection('    ```\n    x').blocks[0]!;
+  expect(node.type).toBe('code');
+  expect(node.attributes.fence).toBeUndefined();
+  expect(node.text).toBe('```\nx');
+});
