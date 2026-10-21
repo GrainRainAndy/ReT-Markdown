@@ -6,17 +6,30 @@ import { indexedContains, isActive, syntaxSpans, type SyntaxSpan } from './synta
 import { parseTable } from './tables';
 import { TableWidget } from './cell-widget';
 import { tableInteractions } from './table-interactions';
+import { blockSpacing, visibleSpacing, type SpacingBlock } from './spacing';
+import { mathHitOffset } from './math-hit';
 
 const refresh=StateEffect.define<null>();
 class RenderWidget extends WidgetType {
   constructor(readonly span:SyntaxSpan,readonly source:string,readonly options:LiveOptions,readonly rendered?:string) {super();}
   eq(other:RenderWidget):boolean {return this.options===other.options && this.source===other.source && this.rendered===other.rendered && this.span.from===other.span.from;}
   toDOM(view:EditorView):HTMLElement {
-    const dom=document.createElement(this.span.block||this.span.kind==='rule'?'div':'span');dom.className=`cm-live-${this.span.kind}${this.span.display?' cm-live-math-block':''}`;
+    const dom:HTMLElement=document.createElement(this.span.block||this.span.kind==='rule'?'div':'span');dom.className=`cm-live-${this.span.kind}${this.span.display?' cm-live-math-block':''}`;
     dom.innerHTML=this.rendered??renderMarkdown(this.source,{resolveImage:this.options.resolveImage}).html;
     dom.setAttribute('aria-label',`${this.span.kind}: ${this.source}`);dom.tabIndex=0;
-    const reveal=()=>{view.dispatch({selection:{anchor:Math.min(this.span.to,this.span.from+1)}});view.focus();};
-    dom.addEventListener('click',reveal);dom.addEventListener('keydown',e=>{if((e as KeyboardEvent).key==='Enter') reveal();});
+    const reveal=(at=Math.min(this.span.to,this.span.from+1))=>{view.dispatch({selection:{anchor:at}});view.focus();};
+    let handledMouseDown=false;
+    dom.addEventListener('mousedown',event=>{
+      handledMouseDown=false;
+      if(this.span.kind!=='math'||event.button!==0||event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||event.defaultPrevented) return;
+      const offset=mathHitOffset(dom,this.source,!!this.span.block,event.clientX,event.clientY);
+      if(offset===null) return;
+      // Measure the old glyph DOM before dispatch removes the widget. CM's
+      // ignoreEvent does not cancel the browser's own mouse selection.
+      event.preventDefault();handledMouseDown=true;reveal(this.span.from+offset);
+    });
+    dom.addEventListener('click',()=>{if(handledMouseDown) {handledMouseDown=false;return;}reveal();});
+    dom.addEventListener('keydown',e=>{if((e as KeyboardEvent).key==='Enter') reveal();});
     return dom;
   }
   ignoreEvent():boolean {return true;}
@@ -45,15 +58,37 @@ class LiteralWidget extends WidgetType {
   }
   ignoreEvent():boolean {return true;}
 }
-interface Projection {decorations:DecorationSet;wrappers:RangeSet<BlockWrapper>}
-const emptyProjection:Projection={decorations:Decoration.none,wrappers:BlockWrapper.set([])};
+interface Projection {decorations:DecorationSet;wrappers:RangeSet<BlockWrapper>;bottom:string}
+const emptyProjection:Projection={decorations:Decoration.none,wrappers:BlockWrapper.set([]),bottom:'0px'};
 
 function project(state:EditorState,options:LiveOptions,spans:readonly SyntaxSpan[],contexts:ReadonlyMap<SyntaxSpan,InlineContextResult>):Projection {
   if(options.getMode()!=='live') return emptyProjection;
   const text=state.doc.toString(),selection=state.selection.ranges,composition=options.composition().range;
   const items:CMRange<Decoration>[]=[],wrappers:CMRange<BlockWrapper>[]=[];
+  const blocks:SpacingBlock[]=[];
+  const space=(span:SyntaxSpan,rank=40)=>blocks.push({from:state.doc.lineAt(span.from).from,to:span.to,kind:span.kind,rank});
   const activeQuote=indexedContains(spans.filter(q=>q.kind==='quote'&&isActive(q,selection,composition)));
-  const gaps=spans.filter(span=>span.kind==='gap'&&!isActive(span,selection,composition)&&!activeQuote(span));
+  const ordinaryGaps=new Set<SyntaxSpan>(),extraLines=new Set<number>();
+  let previousGap:SyntaxSpan|undefined;
+  for(const span of spans) if(span.kind==='gap') {
+    // Syntax already excludes blanks owned by code, lists, tables and math.
+    // Quote-marker gaps keep their container's existing projection policy.
+    if(!text.slice(span.from,span.to).trim()) {
+      ordinaryGaps.add(span);
+      if(previousGap?.to===span.from) extraLines.add(span.from);
+      previousGap=span;
+    } else previousGap=undefined;
+  }
+  const ranges=[...selection,...(composition?[composition]:[])];
+  const activeGap=(span:SyntaxSpan)=>{
+    if(!ordinaryGaps.has(span)) return isActive(span,selection,composition);
+    const end=state.doc.lineAt(span.from).to;
+    // A caret belongs to its own line, while a nonempty selection can own
+    // the LF itself. Do not hide a selected empty row at that boundary.
+    return ranges.some(range=>range.from===range.to ? range.from>=span.from&&range.from<=end
+      :range.from<span.to&&range.to>span.from);
+  };
+  const gaps=spans.filter(span=>span.kind==='gap'&&!extraLines.has(span.from)&&!activeGap(span)&&!activeQuote(span));
   const hiddenGaps=new Set(gaps),coveredByGap=indexedContains(gaps);
   const wrap=(span:SyntaxSpan,classes:string,rank:number)=>{
     wrappers.push(BlockWrapper.create({tagName:'div',attributes:{class:classes},rank}).range(state.doc.lineAt(span.from).from,span.to));
@@ -64,6 +99,7 @@ function project(state:EditorState,options:LiveOptions,spans:readonly SyntaxSpan
       // Keep the LF/CM line boundary: replacing it also swallows the next
       // line's decorations and can rebuild an adjacent focused table widget.
       if(hiddenGaps.has(span)) items.push(Decoration.line({class:'cm-live-gap'}).range(span.from));
+      else if(ordinaryGaps.has(span)) items.push(Decoration.line({class:'cm-live-blank'}).range(span.from));
       continue;
     }
     if(span.kind==='table') {
@@ -75,16 +111,21 @@ function project(state:EditorState,options:LiveOptions,spans:readonly SyntaxSpan
         ? range.from>table.from && range.from<table.to
         : range.from<table.to && range.to>table.from)
         && !table.rows.some(row=>row.cells.some(cell=>range.from>=cell.from && range.to<=cell.to)));
-      if(table&&!reveal) items.push(Decoration.replace({widget:new TableWidget(table,text.slice(span.from,span.to),options,text),block:true}).range(span.from,span.to));
+      if(table&&!reveal) {
+        items.push(Decoration.replace({widget:new TableWidget(table,text.slice(span.from,span.to),options,text),block:true}).range(span.from,span.to));
+        space(span);
+      }
       continue;
     }
     const active=isActive(span,selection,composition);
     if(span.kind==='paragraph') {
+      space(span,20);
       wrap(span,`cm-live-paragraph${span.quoted?' cm-live-quoted-paragraph':''}`,20);
       if(!active&&!activeQuote(span)) breaks(span);
       continue;
     }
     if(span.kind==='heading'&&span.setext) {
+      space(span,30);
       wrap(span,`cm-live-heading cm-live-h${span.level} cm-live-setext-heading`,30);
       if(!active) {
         breaks(span);
@@ -95,9 +136,12 @@ function project(state:EditorState,options:LiveOptions,spans:readonly SyntaxSpan
       }
       continue;
     }
-    if(span.kind==='quote') wrap(span,'cm-live-quote',90-(span.depth??0));
+    if(span.kind==='quote') {const rank=90-(span.depth??0);wrap(span,'cm-live-quote',rank);space(span,rank);}
     if(['image','math','rule'].includes(span.kind)) {
-      if(!active) items.push(Decoration.replace({widget:new RenderWidget(span,text.slice(span.from,span.to),options,contexts.get(span)?.html),block:span.block||span.kind==='rule'}).range(span.from,span.to));
+      if(!active) {
+        items.push(Decoration.replace({widget:new RenderWidget(span,text.slice(span.from,span.to),options,contexts.get(span)?.html),block:span.block||span.kind==='rule'}).range(span.from,span.to));
+        if(span.block||span.kind==='rule') space(span);
+      }
       continue;
     }
     if(span.kind==='hard-break') {
@@ -109,17 +153,25 @@ function project(state:EditorState,options:LiveOptions,spans:readonly SyntaxSpan
       continue;
     }
     if(['heading','list','code'].includes(span.kind)) {
+      if(span.kind!=='list') space(span);
       let from=state.doc.lineAt(span.from).from;
+      const fence=span.fence;
+      const opening=fence?state.doc.lineAt(fence.opening.from).from:null;
+      const closing=fence?.closing?state.doc.lineAt(fence.closing.from).from:null;
+      const lastLine=state.doc.lineAt(span.to).from;
+      // A trailing LF creates an empty CM row at span.to. Only an unclosed
+      // fence whose parser-owned body reaches EOF can project that row.
+      const ownsEOF=!!fence?.ownsEOF&&fence.body.to===state.doc.length;
       do {
         let classes=`cm-live-${span.kind}${span.level?` cm-live-h${span.level}`:''}`;
         if(span.kind==='code') {
-          const first=from===state.doc.lineAt(span.from).from,last=state.doc.lineAt(from).to===span.to;
+          const first=from===opening,last=from===lastLine;
           if(first) classes+=' cm-live-code-first';if(last) classes+=' cm-live-code-last';
-          if(!active&&(first||last&&text.slice(from,span.to).trim().match(/^(?:`{3,}|~{3,})$/))) classes+=' cm-live-code-delimiter';
+          if(!active&&(first||from===closing)) classes+=' cm-live-code-delimiter';
         }
         items.push(Decoration.line({class:classes}).range(from));
         from=state.doc.lineAt(from).to+1;
-      } while(from<span.to);
+      } while(from<span.to||ownsEOF&&from===span.to);
     } else if(span.kind!=='quote') {
       const href=span.kind==='link'?contexts.get(span)?.href:null;
       if(span.kind==='link'&&!href) continue;
@@ -131,7 +183,15 @@ function project(state:EditorState,options:LiveOptions,spans:readonly SyntaxSpan
       if(mark.to>mark.from) items.push(Decoration.replace({widget:label?new PrefixWidget(label,span.kind):undefined}).range(mark.from,mark.to));
     });
   }
-  return {decorations:Decoration.set(items,true),wrappers:BlockWrapper.set(wrappers,true)};
+  // The final empty CM line (also present in an empty document) has no gap
+  // syntax span. Align it only when it isn't owned by a source container.
+  const last=state.doc.line(state.doc.lines);
+  if(last.length===0&&!spans.some(span=>['code','list','quote','table','math'].includes(span.kind)
+    &&span.from<=last.from&&span.to>=last.to&&(span.kind!=='code'||span.fence?.ownsEOF))) {
+    items.push(Decoration.line({class:'cm-live-blank'}).range(last.from));
+  }
+  const spacing=blockSpacing(state,blocks,new Set(gaps.map(span=>span.from)),extraLines);
+  return {decorations:Decoration.set(items,true),wrappers:BlockWrapper.set([...wrappers,...spacing.wrappers],true),bottom:spacing.bottom};
 }
 
 /** Install once on the root session; mode is observed through the published adapter. */
@@ -154,11 +214,12 @@ export const liveExtensions:LiveExtensionFactory = options => {
     update:(value,tr)=>{
       // Mapping existing decorations preserves the actual marked-text DOM. In particular
       // do not rebuild a replacement widget when its source changes provisionally.
-      if(options.composition().composing) return {decorations:value.decorations.map(tr.changes),wrappers:value.wrappers.map(tr.changes)};
+      if(options.composition().composing) return {...value,decorations:value.decorations.map(tr.changes),wrappers:value.wrappers.map(tr.changes)};
       if(!tr.docChanged&&!tr.selection&&!tr.reconfigured&&!tr.effects.some(effect=>effect.is(refresh))) return value;
       return projectState(tr.state);
     },
-    provide:field=>[EditorView.decorations.from(field,value=>value.decorations),EditorView.blockWrappers.from(field,value=>value.wrappers)],
+    provide:field=>[EditorView.decorations.from(field,value=>value.decorations),EditorView.blockWrappers.of(view=>visibleSpacing(view,view.state.field(field).wrappers)),
+      EditorView.contentAttributes.from(field,(value):Record<string,string>=>value.bottom==='0px'?{}:{style:`padding-bottom:calc(4px + ${value.bottom})`})],
   });
   return [field,EditorView.updateListener.of(update=>{
     if(options.getMode()!=='live'||!update.transactions.some(tr=>tr.isUserEvent('select.search'))) return;
@@ -174,15 +235,16 @@ export const liveExtensions:LiveExtensionFactory = options => {
   }),EditorView.domEventHandlers({compositionend:(_event,view)=>{
     setTimeout(()=>{if(view.dom.isConnected && !options.composition().composing) view.dispatch({effects:refresh.of(null)});},1);return false;
   }}),EditorView.baseTheme({
-    '.cm-live-gap':{display:'none'},
-    '.cm-live-paragraph':{margin:'.8em 0'},
+    // A zero-height box keeps wrapper boundary measurements meaningful even
+    // when the first/last source line of a quote is hidden.
+    '.cm-live-gap':{height:'0',lineHeight:'0',fontSize:'0',padding:'0',overflow:'hidden',visibility:'hidden'},
+    '.cm-live-blank':{padding:'0'},
+    '.cm-live-paragraph':{margin:'0'},
     // Keep CM's caret buffers, but do not let their baseline-aligned 1em
     // image height enlarge the frozen Setext heading line box.
     '.cm-live-setext-heading .cm-widgetBuffer':{height:'0'},
     '.cm-live-paragraph > .cm-line, .cm-live-setext-heading > .cm-line':{padding:'0'},
-    '.cm-live-quote > .cm-live-paragraph:first-child':{marginTop:'0'},
-    '.cm-live-quote > .cm-live-paragraph:last-child':{marginBottom:'0'},
-    '.cm-live-heading':{fontWeight:'700',lineHeight:'1.4',marginTop:'1rem',marginBottom:'1rem'},
+    '.cm-live-heading':{fontWeight:'700',lineHeight:'1.4',margin:'0'},
     '.cm-live-h1':{fontSize:'2.25em',lineHeight:'1.2'},
     '.cm-live-h2':{fontSize:'1.75em',lineHeight:'1.225'},
     '.cm-live-h3':{fontSize:'1.5em',lineHeight:'1.43'},
@@ -196,19 +258,22 @@ export const liveExtensions:LiveExtensionFactory = options => {
     },
     '.cm-live-inline-code':{padding:'0 2px',backgroundColor:'var(--inline-bg, #f3f4f4)'},
     '.cm-live-code':{backgroundColor:'var(--block-bg, #f8f8f8)',borderWidth:'0 1px',borderRadius:'0',padding:'0 10px'},
-    '.cm-live-code-first':{borderTopWidth:'1px',borderTopLeftRadius:'3px',borderTopRightRadius:'3px',marginTop:'15px',paddingTop:'8px'},
-    '.cm-live-code-last':{borderBottomWidth:'1px',borderBottomLeftRadius:'3px',borderBottomRightRadius:'3px',marginBottom:'15px',paddingBottom:'6px'},
+    '.cm-live-code-first':{borderTopWidth:'1px',borderTopLeftRadius:'3px',borderTopRightRadius:'3px',paddingTop:'8px'},
+    '.cm-live-code-last':{borderBottomWidth:'1px',borderBottomLeftRadius:'3px',borderBottomRightRadius:'3px',paddingBottom:'6px'},
     '.cm-live-code-delimiter':{fontSize:'0',lineHeight:'0'},
     '.cm-live-quote':{borderLeft:'4px solid var(--border, #dfe2e5)',padding:'0 15px',color:'var(--muted, #777)'},
     '.cm-live-list':{paddingLeft:'30px'},
     '.cm-live-math, .cm-live-image':{display:'inline-block',maxWidth:'100%',verticalAlign:'middle',cursor:'text'},
-    '.cm-live-math-block':{display:'block',width:'100%',textAlign:'center',margin:'.8em 0'},
+    '.cm-live-math-block':{display:'block',width:'100%',textAlign:'center',margin:'0'},
     '.cm-live-math-block .katex-display':{margin:'0',textAlign:'center'},
     '.cm-live-rule':{display:'block'},
+    // Only the HR's top margin collapses out: the renderer's trailing LF
+    // keeps its bottom margin inside the already measured widget box.
+    '.cm-live-rule hr':{marginTop:'0'},
     '.cm-live-escape, .cm-live-entity':{cursor:'text',whiteSpace:'normal'},
     '.cm-live-math p, .cm-live-image p':{display:'inline',margin:'0'},
     '.cm-live-image img':{maxWidth:'100%'},
-    '.cm-live-table':{position:'relative',overflowX:'auto',margin:'.8em 0'},
+    '.cm-live-table':{position:'relative',overflowX:'auto',margin:'0'},
     '.cm-live-table table':{borderCollapse:'collapse',width:'auto',maxWidth:'100%'},
     '.cm-live-table th, .cm-live-table td':{border:'1px solid var(--border, #dfe2e5)',padding:'6px 13px',verticalAlign:'top'},
     '.cm-live-table th, .cm-live-table tr:nth-child(even)':{backgroundColor:'var(--block-bg, #f8f8f8)'},

@@ -1,22 +1,16 @@
-import katex from 'katex';
 import type { MarkdownIt, Token } from 'markdown-it';
 import { inlineRange, type RenderEnv } from './positions';
+import { renderMappedMath, type MathSource } from './math-katex';
 
-interface MathMeta extends Record<string, unknown> { from: number; to: number; closed: boolean }
+interface MathMeta extends Record<string, unknown>, MathSource { to: number; closed: boolean }
 
 function renderMath(token: Token, env: RenderEnv, escape: (value: string) => string): string {
   const meta = token.meta as MathMeta;
   try {
     if (!meta.closed) throw new Error('Unclosed math delimiter');
-    return katex.renderToString(token.content, {
-      displayMode: token.type === 'math_block',
-      output: env.clipboard ? 'mathml' : 'htmlAndMathml',
-      trust: false,
-      strict: 'ignore',
-      throwOnError: true,
-      maxExpand: 1000,
-      maxSize: 50,
-    });
+    const html = renderMappedMath(token.content, token.type === 'math_block', env.clipboard, meta);
+    if (env.clipboard) return html;
+    return `<span data-math-from="${meta.from}" data-math-to="${meta.to}" data-math-source="${escape(JSON.stringify(env.original.slice(meta.from, meta.to)))}">${html}</span>`;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Invalid mathematical expression';
     env.issues.push({ kind: 'math', message, from: meta.from, to: meta.to });
@@ -50,7 +44,14 @@ export function installMath(md: MarkdownIt): void {
     if (!silent) {
       const token = state.push(delimiter === '$$' ? 'math_block' : 'math_inline', '', 0);
       token.content = state.src.slice(start + delimiter.length, closed ? close : max);
-      token.meta = { ...inlineRange(env, start, end), closed } satisfies MathMeta;
+      const starts: number[] = [], ends: number[] = [];
+      for (let i = start + delimiter.length; i < (closed ? close : max); i++) {
+        const range = inlineRange(env, i, i + 1);
+        // A table's Markdown escape belongs to the visible pipe's lexical unit.
+        if (state.src[i] === '|' && env.original[range.from - 1] === '\\' && env.inlineOffsets[i - 1] < range.from - 1) range.from--;
+        starts.push(range.from); ends.push(range.to);
+      }
+      token.meta = { ...inlineRange(env, start, end), starts, ends, closed } satisfies MathMeta;
     }
     state.pos = end;
     return true;
@@ -65,11 +66,16 @@ export function installMath(md: MarkdownIt): void {
     let close = state.src.indexOf('$$', start + 2);
     let closed = close >= 0 && close <= state.eMarks[startLine] - 2;
     let content = '';
+    const starts: number[] = [], ends: number[] = [];
+    const append = (from: number, to: number) => {
+      content += state.src.slice(from, to);
+      for (let i = from; i < to; i++) { starts.push(env.offsets[i]); ends.push(env.offsets[i + 1]); }
+    };
     if (closed) {
       if (state.src.slice(close + 2, state.eMarks[line]).trim()) return false;
-      content = state.src.slice(start + 2, close);
+      append(start + 2, close);
     } else {
-      content = state.src.slice(start + 2, state.eMarks[startLine]);
+      append(start + 2, state.eMarks[startLine]);
       for (line = startLine + 1; line < endLine; line++) {
         const lineStart = state.bMarks[line] + state.tShift[line];
         // Lists can pass an endLine beyond the item. Leave nonempty outdented
@@ -78,11 +84,13 @@ export function installMath(md: MarkdownIt): void {
         const text = state.src.slice(lineStart, state.eMarks[line]);
         if (text.trimEnd().endsWith('$$')) {
           close = state.eMarks[line] - text.length + text.trimEnd().length - 2;
-          content += '\n' + state.src.slice(lineStart, close);
+          append(state.eMarks[line - 1], state.eMarks[line - 1] + 1);
+          append(lineStart, close);
           closed = true;
           break;
         }
-        content += '\n' + text;
+        append(state.eMarks[line - 1], state.eMarks[line - 1] + 1);
+        append(lineStart, state.eMarks[line]);
       }
       if (!closed) line = Math.max(startLine, line - 1);
     }
@@ -91,7 +99,8 @@ export function installMath(md: MarkdownIt): void {
     token.block = true;
     token.map = [startLine, line + 1];
     token.content = content.trim();
-    token.meta = { from: env.offsets[start], to: env.offsets[end], closed } satisfies MathMeta;
+    const trim = content.length - content.trimStart().length;
+    token.meta = { from: env.offsets[start], to: env.offsets[end], starts: starts.slice(trim, trim + token.content.length), ends: ends.slice(trim, trim + token.content.length), closed } satisfies MathMeta;
     state.line = line + 1;
     return true;
   }, { alt: ['paragraph', 'reference', 'blockquote', 'list'] });

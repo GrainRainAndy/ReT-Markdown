@@ -188,11 +188,16 @@ test('live computed typography matches frozen F19 and renderer dark/print variab
  const text='# H1\n\n## H2\n\n### H3\n\n#### H4\n\n##### H5\n\n###### H6\n\n> quote\n\n[link](https://example.com) and `code`\n\n| A | B |\n| - | - |\n| C | D |\n\nend';
  await boot(page,text);
  const headings=await page.locator('.cm-live-heading').evaluateAll(elements=>elements.map(el=>{
-  const s=getComputedStyle(el);return {font:s.fontSize,line:s.lineHeight,top:s.marginTop,bottom:s.marginBottom,border:s.borderBottomWidth,color:s.borderBottomColor};
+  const s=getComputedStyle(el),box=el.getBoundingClientRect();return {font:s.fontSize,line:s.lineHeight,top:box.top,bottom:box.bottom,border:s.borderBottomWidth,color:s.borderBottomColor};
  }));
  expect(headings.map(h=>h.font)).toEqual(['36px','28px','24px','20px','16px','16px']);
  for(const [i,ratio] of [1.2,1.225,1.43,1.4,1.4,1.4].entries()) expect(parseFloat(headings[i].line)).toBeCloseTo(parseFloat(headings[i].font)*ratio,2);
- for(const h of headings) {expect(h.top).toBe('16px');expect(h.bottom).toBe('16px');}
+ // Preserve the frozen visible spacing while allowing CM-measurable insets
+ // to carry it; CSS margin itself was the source of incorrect hit testing.
+ const contentTop=await page.locator('#editor > .cm-editor > .cm-scroller > .cm-content').evaluate(el=>el.getBoundingClientRect().top);
+ expect(headings[0].top-contentTop).toBeCloseTo(20,1); // CM's 4px + heading's 16px.
+ for(let i=1;i<headings.length;i++) expect(headings[i].top-headings[i-1].bottom).toBeCloseTo(16,1);
+ expect((await page.locator('.cm-live-quote').boundingBox())!.y-headings.at(-1)!.bottom).toBeCloseTo(16,1);
  expect(headings[0].border).toBe('1px');expect(headings[1].color).toBe('rgb(238, 238, 238)');
  const quote=await page.locator('.cm-live-quote').evaluate(el=>{const s=getComputedStyle(el);return [s.borderLeftWidth,s.borderLeftColor,s.paddingLeft,s.paddingRight,s.color];});
  expect(quote).toEqual(['4px','rgb(223, 226, 229)','15px','15px','rgb(119, 119, 119)']);
@@ -219,9 +224,14 @@ test('inactive list markers remain visible and fenced code forms one styled bloc
   const s=getComputedStyle(el);return {top:s.borderTopWidth,bottom:s.borderBottomWidth,left:s.borderLeftWidth,radius:s.borderTopLeftRadius,marginTop:s.marginTop,marginBottom:s.marginBottom,paddingTop:s.paddingTop,paddingBottom:s.paddingBottom,font:s.fontSize};
  }));
  expect(rows).toHaveLength(4);
- expect(rows[0]).toMatchObject({top:'1px',bottom:'0px',left:'1px',radius:'3px',marginTop:'15px',paddingTop:'8px'});
+ expect(rows[0]).toMatchObject({top:'1px',bottom:'0px',left:'1px',radius:'3px',paddingTop:'8px'});
  expect(rows[1]).toMatchObject({top:'0px',bottom:'0px',left:'1px',font:'14.4px'});
- expect(rows[3]).toMatchObject({bottom:'1px',marginBottom:'15px',paddingBottom:'6px'});
+ expect(rows[3]).toMatchObject({bottom:'1px',paddingBottom:'6px'});
+ const before=(await page.locator('.cm-live-list').filter({hasText:'done'}).boundingBox())!;
+ const first=(await page.locator('.cm-live-code-first').boundingBox())!,last=(await page.locator('.cm-live-code-last').boundingBox())!;
+ const after=(await page.locator('.cm-live-paragraph').filter({hasText:'end'}).boundingBox())!;
+ expect(first.y-before.y-before.height).toBeCloseTo(15,1);
+ expect(after.y-last.y-last.height).toBeCloseTo(15,1);
 });
 
 test('table formula renders once and raw cell selection copies original escaped Markdown',async({page})=>{

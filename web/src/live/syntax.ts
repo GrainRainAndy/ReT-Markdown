@@ -1,8 +1,5 @@
-import { parser, GFM } from '@lezer/markdown';
 import type { SyntaxNode } from '@lezer/common';
-import MarkdownIt from 'markdown-it';
-import { installMath } from '../render/math';
-import { createEnv, installPositions } from '../render/positions';
+import { structureContext } from '../editor/structure';
 import type { Range } from '../protocol';
 
 export interface SyntaxSpan extends Range {
@@ -16,11 +13,8 @@ export interface SyntaxSpan extends Range {
   display?: boolean;
   quoted?: boolean;
   depth?: number;
+  fence?: { opening: Range; closing: Range | null; body: Range; ownsEOF: boolean };
 }
-const grammar = parser.configure(GFM);
-const mathGrammar = new MarkdownIt({ html: true });
-installPositions(mathGrammar);
-installMath(mathGrammar);
 
 export function isActive(span: Range, selection: readonly Range[], composition: Range | null): boolean {
   return [...selection, ...(composition ? [composition] : [])].some(r =>
@@ -66,13 +60,34 @@ function orderedLabel(node:SyntaxNode,text:string):string {
 /** Positions are UTF-16 in the original LF text; no HTML-to-source inference. */
 export function syntaxSpans(text: string): SyntaxSpan[] {
   const spans: SyntaxSpan[] = [];
-  const tree=grammar.parse(text);
+  const { tree, maths: mathRanges, fences }=structureContext(text);
+  const byOpening=new Map(fences.map(fence=>[fence.opening.from,fence]));
+  const seenFences=new Set<number>(),coveredByFenceBody=indexedContains(fences.map(fence=>fence.bodyRange));
+  const codeSpan=(fence:typeof fences[number],info:Range[]=[]):SyntaxSpan=>{
+    const marks=[fence.opening,...info,...(fence.closing?[fence.closing]:[])];
+    return {from:fence.opening.from,to:fence.to,kind:'code',marks,labels:undefined,
+      fence:{opening:fence.opening,closing:fence.closing,body:fence.bodyRange,ownsEOF:fence.ownsEOF}};
+  };
   tree.iterate({ enter(node) {
     const name = node.name;
+    if(name==='FencedCode') {
+      const opening=node.node.getChildren('CodeMark')[0];
+      const fence=opening&&byOpening.get(opening.from);
+      if(fence) {
+        seenFences.add(fence.opening.from);
+        const lineEnd=text.indexOf('\n',fence.opening.to);
+        const info=node.node.getChildren('CodeInfo').filter(mark=>mark.to<=(lineEnd<0?text.length:lineEnd))
+          .map(mark=>({from:mark.from,to:mark.to}));
+        spans.push(codeSpan(fence,info));
+      }
+      // Renderer-owned code has no inline/block children in the live projection.
+      return false;
+    }
+    if(coveredByFenceBody(node)) return false;
     const paragraph=name==='Paragraph' && ['Document','Blockquote'].includes(node.node.parent?.name??'');
     const kind = /^ATXHeading|^SetextHeading/.test(name) ? 'heading' : paragraph ? 'paragraph' : ({
       StrongEmphasis:'strong', Emphasis:'emphasis', Strikethrough:'strike', InlineCode:'inline-code',
-      FencedCode:'code', Task:'task', ListItem:'list', Blockquote:'quote', Image:'image', Link:'link', Table:'table',
+      Task:'task', ListItem:'list', Blockquote:'quote', Image:'image', Link:'link', Table:'table',
       HorizontalRule:'rule',Escape:'escape',Entity:'entity',HardBreak:'hard-break',
     } as Record<string,string>)[name];
     if (!kind) return;
@@ -105,13 +120,14 @@ export function syntaxSpans(text: string): SyntaxSpan[] {
     });
     if(['code','inline-code','image','table'].includes(kind)) return false;
   } });
-  const env=createEnv(text,{});
-  const tokens=mathGrammar.parse(text,env);
+  for(const fence of fences) if(!seenFences.has(fence.opening.from)) {
+    const end=text.indexOf('\n',fence.opening.to),lineEnd=end<0?text.length:end;
+    let from=fence.opening.to;while(from<lineEnd&&(text[from]===' '||text[from]==='\t')) from++;
+    spans.push(codeSpan(fence,from<lineEnd?[{from,to:lineEnd}]:[]));
+  }
   const coveredByTable=indexedContains(spans.filter(s=>s.kind==='table'));
-  for(const token of tokens.flatMap(t=>[t,...(t.children??[])])) {
-    if(!/^math_(inline|block)$/.test(token.type)||!token.meta?.closed) continue;
-    const from=Number(token.meta.from),to=Number(token.meta.to);
-    if(!coveredByTable({from,to})) spans.push({kind:'math',from,to,marks:[],block:token.block,display:token.type==='math_block'});
+  for(const {from,to,closed,block,display} of mathRanges) {
+    if(closed&&!coveredByTable({from,to})) spans.push({kind:'math',from,to,marks:[],block,display});
   }
   // Collapse only source-only inter-block blank lines, never opaque source/code.
   const roots:SyntaxNode[]=[];

@@ -11,5 +11,5 @@
     "types": ["node", "vitest/globals"],
     "skipLibCheck": true
   },
-  "include": ["web/**/*.ts", "vitest.config.ts"]
+  "include": ["web/**/*.ts", "vitest.config.ts", "playwright.config.ts"]
 }

@@ -101,8 +101,10 @@ export function createTransport(parent: HTMLElement, identity: EditorBootstrap, 
         if (expected === undefined || expected !== payload.revision) throw new Error('Acknowledgement does not match a commit/snapshot');
         // Older duplicate acks can arrive after a barrier has acknowledged a later revision.
         if (session.pendingCommits().some(c => c.revision <= payload.revision)) session.acknowledge(payload.revision);
-        for (const [key, rev] of commits) if (rev <= payload.revision) commits.delete(key);
-        for (const [key, rev] of snapshotReplies) if (rev <= payload.revision) snapshotReplies.delete(key);
+        // Commit progress is cumulative; each transport association lives until its own ACK.
+        // Another in-flight ACK may still refer to an older commit or a close snapshot.
+        commits.delete(envelope.replyTo!);
+        snapshotReplies.delete(envelope.replyTo!);
         return result(id);
       }
       case 'resyncRequired':

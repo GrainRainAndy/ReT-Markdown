@@ -54,5 +54,8 @@ it.each([
  ['boundary-1m','e7e3ea9bc3c87efc5d1f2c70a8088baa2393bf678efe6b50b3c155b330d48b11'],
 ])('preserves every frozen %s projection span after containment optimization',async(name,digest)=>{
  const source=await readFile(`build/fixtures/${name}.md`,'utf8');
- expect(createHash('sha256').update(JSON.stringify(syntaxSpans(source))).digest('hex')).toBe(digest);
+ // Fence ownership is additive parser metadata, covered by interaction-syntax-a.
+ // Keep the original frozen hash for every pre-existing projection field.
+ const frozen=syntaxSpans(source).map(({fence: _fence,...span})=>span);
+ expect(createHash('sha256').update(JSON.stringify(frozen)).digest('hex')).toBe(digest);
 });

@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:ReT-Markdown}",
+            "name": "Debug ReTMarkdown",
+            "target": "ReTMarkdown",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug ReTMarkdown"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:ReT-Markdown}",
+            "name": "Release ReTMarkdown",
+            "target": "ReTMarkdown",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release ReTMarkdown"
+        }
+    ]
+}

@@ -1,7 +1,7 @@
 import { Annotation, ChangeSet, Compartment, EditorSelection, EditorState, Transaction, type TransactionSpec } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 import { defaultKeymap, undo, redo, undoDepth, redoDepth, isolateHistory } from '@codemirror/commands';
-import { markdown } from '@codemirror/lang-markdown';
+import { markdown, deleteMarkupBackward } from '@codemirror/lang-markdown';
 import { codeLanguage, fencedCodeHighlighting } from '../live/code-highlighting';
 import { linkOpening } from '../live/links';
 import { search, searchKeymap, openSearchPanel, getSearchQuery, setSearchQuery, SearchQuery,
@@ -9,8 +9,9 @@ import { search, searchKeymap, openSearchPanel, getSearchQuery, setSearchQuery, 
 import type { Appearance, Commit, CommitReason, Mode, Patch, Payloads, Range, Revision, Selection, Snapshot, Source } from '../protocol';
 import { applyPatches, encodeSource } from './source';
 import { changedPatches, restoreEOLs, sourceAt, sourceHistory } from './history';
-import { clipboardPayload, pastePayload, type ClipboardPayload, type PasteInput } from './clipboard';
-import { format, insertImages, type FormatOptions } from './commands';
+import { clipboardPayload, pastePayload, selectedRange, type ClipboardPayload, type PasteInput } from './clipboard';
+import { format, insertImages, joinParagraphBackward, type FormatOptions } from './commands';
+import { isLiteralRange } from './structure';
 import { findRanges, nextRange, replacePatches, type FindOptions } from './search';
 import type { LiveExtensionFactory, LiveOptions } from './live-contract';
 
@@ -48,7 +49,8 @@ export class EditorSession {
   private compositionRange: Range | null = null;
   private composedChanges: ChangeSet | null = null;
   private afterComposition: (() => void)[] = [];
-  private compositionTimer?: ReturnType<typeof setTimeout>;
+  private compositionEndEpoch = 0;
+  private compositionEndTask?: MessageChannel;
   private destroyed = false;
   private locked = false;
   private acknowledged: Revision;
@@ -60,13 +62,17 @@ export class EditorSession {
     this.committed = clone(initial); this.acknowledged = initial.revision;
     this.emit = emit; this.options = options;
     this.state = EditorState.create({ doc: initial.text, extensions: [
-      sourceHistory(initial), markdown({ codeLanguages: codeLanguage }), fencedCodeHighlighting, search({ top: true }),
+      sourceHistory(initial), markdown({ codeLanguages: codeLanguage, addKeymap: false }), fencedCodeHighlighting, search({ top: true }),
       EditorState.transactionExtender.of(tr => tr.docChanged && tr.isUserEvent('input.replace')
         ? { annotations: isolateHistory.of('full') } : null),
       this.modeSlot.of(EditorView.editorAttributes.of({ 'data-mode': this.mode })),
       this.appearanceSlot.of(this.theme()), this.zoomSlot.of([]), this.liveSlot.of([]),
       this.readOnlySlot.of([EditorState.readOnly.of(false), EditorView.editable.of(true)]),
       EditorState.transactionFilter.of(tr => this.locked && tr.docChanged && !tr.annotation(nativeAsset) ? [] : tr),
+      EditorState.transactionFilter.of(tr => this.composing && tr.docChanged && !this.composedChanges!.empty
+        // CM's initial cross-line deletion is plain "input". Its later first
+        // preedit must join that event even after the normal history timeout.
+        ? [{ userEvent: 'input.type.compose' }, tr] : tr),
       keymap.of([
         { key: 'Mod-z', run: () => this.runHistory('undo') },
         { key: 'Mod-Shift-z', run: () => this.runHistory('redo') },
@@ -74,6 +80,12 @@ export class EditorSession {
         { key: 'Mod-/', run: () => { this.setMode(this.mode === 'live' ? 'source' : 'live'); return true; } },
         ...[['Mod-b', 'bold'], ['Mod-i', 'italic'], ['Mod-`', 'inlineCode'], ['Mod-k', 'link'], ['Mod-Shift-7', 'orderedList'], ['Mod-Shift-8', 'list']].map(([key, kind]) => ({ key, run: () => this.keyFormat(kind) })),
         { key: 'Enter', run: () => this.keyFormat('newline') },
+        { key: 'Backspace', run: view => {
+          if (this.composing || this.locked) return true;
+          if (joinParagraphBackward(this)) return true;
+          const { from, to } = this.state.selection.main;
+          return !isLiteralRange(this.getSource().text, from, to) && deleteMarkupBackward(view);
+        } },
         { key: 'Tab', run: () => this.keyFormat('indent') },
         { key: 'Shift-Tab', run: () => this.keyFormat('outdent') },
         { key: 'Mod-f', run: () => { void this.command('find'); return true; } },
@@ -82,12 +94,25 @@ export class EditorSession {
         { key: 'Mod-Alt-f', run: () => { void this.command('replace'); return true; } },
         ...searchKeymap, ...defaultKeymap,
       ]),
+      // Public observers run before CM's built-in composition observer, which may
+      // delete a cross-line selection before ordinary event handlers are called.
+      EditorView.domEventObservers({
+        compositionstart: () => { if (!this.locked) this.beginComposition(); },
+        compositionupdate: () => { if (!this.locked) this.beginComposition(); },
+      }),
       EditorView.domEventHandlers({
-        compositionstart: () => { this.beginComposition(); return false; },
         compositionend: () => {
-          // CM flushes final DOM mutations in a microtask after this event.
-          clearTimeout(this.compositionTimer);
-          this.compositionTimer = setTimeout(() => { if (!this.destroyed) this.endComposition(); }, 0);
+          // Final browser input can mutate DOM AFTER these handlers. Complete in
+          // the next event task, after this task's mutation-observer checkpoint,
+          // rather than racing it with a completion microtask or elapsed delay.
+          this.clearCompositionEndTask();
+          const epoch = ++this.compositionEndEpoch;
+          const channel = this.compositionEndTask = new MessageChannel();
+          channel.port1.onmessage = () => {
+            if (this.compositionEndTask === channel) this.clearCompositionEndTask();
+            if (!this.destroyed && epoch === this.compositionEndEpoch) this.endComposition();
+          };
+          channel.port2.postMessage(null);
           return false;
         },
         copy: event => {
@@ -100,11 +125,14 @@ export class EditorSession {
         cut: event => {
           if (this.composing || this.locked) return true;
           if (this.state.selection.main.empty) return false;
-          const payload = clipboardPayload(this.getSource(), this.selection(), this.mode);
+          const source = this.getSource();
+          const { from, to } = selectedRange(source, this.selection(), this.mode);
+          const payload = clipboardPayload(source, { anchor: from, head: to }, 'source');
           event.preventDefault(); event.clipboardData?.setData('text/plain', payload.text);
           if (this.options.writeClipboard) void Promise.resolve(this.options.writeClipboard(payload)).catch(() => {});
-          const { from, to } = this.state.selection.main;
-          this.edit([{ from, to, insert: '', eols: [] }], { userEvent: 'delete.cut' }); return true;
+          this.edit([{ from, to, insert: '', eols: [] }], {
+            selection: { anchor: from, head: from }, userEvent: 'delete.cut',
+          }); return true;
         },
         paste: event => {
           if (this.composing || this.locked) { event.preventDefault(); return true; }
@@ -136,7 +164,7 @@ export class EditorSession {
     if (this.composing) throw new Error('Wait for composition to finish');
   }
   private keyFormat(kind: string): boolean {
-    if (this.composing || this.locked) return false;
+    if (this.composing || this.locked) return true;
     format(this, { kind }); return true;
   }
   attach(parent: HTMLElement): void {
@@ -146,6 +174,7 @@ export class EditorSession {
       dispatchTransactions: transactions => { for (const tr of transactions) this.dispatch(tr); } });
   }
   getSource(): Source { return sourceAt(this.state, this.committed.bom); }
+  getMode(): Mode { return this.mode; }
   snapshot(): Snapshot { return clone(this.committed); }
   selection(): Selection { const { anchor, head } = this.state.selection.main; return { anchor, head }; }
   barrier(): Payloads['snapshot'] {
@@ -211,18 +240,29 @@ export class EditorSession {
   }
   pendingCommits(): Commit[] { return [...this.outbox.values()].map(c => structuredClone(c)); }
   beginComposition(): void {
-    this.assertAlive(); if (this.composing) return;
+    this.assertAlive();
+    // A new native composition is a separate event boundary. Finish the prior
+    // one before taking its committed snapshot; its queued task becomes stale.
+    if (this.compositionEndTask) this.endComposition();
+    this.compositionEndEpoch++;
+    if (this.composing) return;
     if (this.locked) throw new Error('Editor is read-only');
     this.committedSelection = this.selection(); this.composing = true;
     const { from, to } = this.state.selection.main; this.compositionRange = { from, to };
     this.composedChanges = ChangeSet.empty(this.state.doc.length); this.notify();
   }
   endComposition(): void {
+    this.clearCompositionEndTask();
     if (!this.composing) return;
+    this.compositionEndEpoch++;
     this.composing = false; this.compositionRange = null;
     const changes = this.composedChanges!; this.composedChanges = null;
     this.publish(changes, 'edit'); this.committedSelection = this.selection(); this.notify();
     for (const action of this.afterComposition.splice(0)) action();
+  }
+  private clearCompositionEndTask(): void {
+    this.compositionEndTask?.port1.close(); this.compositionEndTask?.port2.close();
+    this.compositionEndTask = undefined;
   }
   private runHistory(name: 'undo' | 'redo'): boolean {
     if (this.composing || this.locked) return false;
@@ -265,7 +305,12 @@ export class EditorSession {
       await this.options.writeClipboard?.(clipboardPayload(this.getSource(), this.selection(), this.mode,
         name === 'copyRich' ? 'rich' : name === 'copyPlain' ? 'plain' : 'source', { resolveImage: this.options.resolveImage })); return;
     }
-    if (this.composing) await new Promise<void>(resolve => this.afterComposition.push(resolve));
+    while (this.composing) {
+      await new Promise<void>(resolve => this.afterComposition.push(resolve));
+      // A new composition may have started before this promise continuation.
+      // Revalidate ownership instead of interrupting it or silently doing nothing.
+      this.assertAlive();
+    }
     this.assertAlive();
     switch (name) {
       case 'undo': case 'redo': this.runHistory(name); return;
@@ -335,7 +380,8 @@ export class EditorSession {
   }
   destroy(): void {
     if (this.destroyed) return;
-    clearTimeout(this.compositionTimer); this.view?.destroy(); this.view = undefined; this.destroyed = true;
+    this.compositionEndEpoch++; this.clearCompositionEndTask();
+    this.view?.destroy(); this.view = undefined; this.destroyed = true;
     for (const action of this.afterComposition.splice(0)) action();
   }
 }

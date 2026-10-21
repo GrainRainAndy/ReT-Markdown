@@ -3,8 +3,17 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let documentController = DocumentController()
-    private let menus = MenuController()
+    private let appearancePreferences: AppearancePreferences
+    private let menus: MenuController
+
+    init(appearancePreferences: AppearancePreferences = AppearancePreferences()) {
+        self.appearancePreferences = appearancePreferences
+        menus = MenuController(appearancePreferences: appearancePreferences)
+        super.init()
+    }
+
     func applicationWillFinishLaunching(_ notification: Notification) {
+        appearancePreferences.apply()
         documentController.configureDocument = { document in
             let assets = try NativeAssetIntegration.install(on: document)
             PDFExporter.install(on: document, manifest: { snapshot in

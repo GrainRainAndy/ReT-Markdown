@@ -112,3 +112,28 @@ it('S4 resolves literal percent and space files by exact renderer-decoded identi
   expect(render().match(/<img src="[^"]+"/g)).toEqual(['<img src="ret-resource://asset/new-percent"', '<img src="ret-resource://asset/new-space"']);
   expect(s.snapshot()).toEqual(before); h.transport.destroy();
 });
+
+
+it.each(['commit-first', 'snapshot-first', 'newer-commit-first'] as const)(
+  'accepts independently correlated close snapshot ACKs in %s order', async order => {
+    const h = harness(); await h.load();
+    try {
+      const session = h.transport.session!;
+      session.edit([{ from: 1, to: 1, insert: '!', eols: [] }]);
+      const commit = h.posts.find(e => e.type === 'commit')!;
+      const captured = await h.transport.receive(h.message('barrier', { purpose: 'close' }));
+      expect(captured.type).toBe('snapshot');
+      const acknowledge = (replyTo: string, revision: number) =>
+        h.transport.receive(h.message('ack', { revision }, { replyTo }));
+      if (order === 'newer-commit-first') {
+        session.edit([{ from: 1, to: 1, insert: '?', eols: [] }]);
+        const newer = h.posts.filter(e => e.type === 'commit').at(-1)!;
+        expect(await acknowledge(newer.id, 2)).toMatchObject({ type: 'result', payload: { ok: true } });
+      }
+      const ids = order === 'snapshot-first' ? [captured.id, commit.id] : [commit.id, captured.id];
+      for (const id of ids) expect(await acknowledge(id, 1)).toMatchObject({ type: 'result', payload: { ok: true } });
+      expect(session.pendingCommits()).toEqual([]);
+      expect(session.snapshot()).toMatchObject({ ...initial, text: order === 'newer-commit-first' ? 'a?!\nb' : 'a!\nb', revision: order === 'newer-commit-first' ? 2 : 1 });
+      expect(await acknowledge('unknown-snapshot', 1)).toMatchObject({ type: 'error' });
+    } finally { h.transport.destroy(); }
+  });

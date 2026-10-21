@@ -2,6 +2,13 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+if [[ "${RET_PREPARE_QA:-0}" == "1" ]]; then
+  : "${RET_SOURCE_IDENTITY:?Set the full source SHA-256 when preparing QA}"
+  if [[ ! "$RET_SOURCE_IDENTITY" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'RET_SOURCE_IDENTITY must be a full lowercase SHA-256\n' >&2
+    exit 1
+  fi
+fi
 # package.json is the canonical release version, including prerelease metadata.
 RELEASE_VERSION="$(node -p "require('./package.json').version")"
 if [[ ! "$RELEASE_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
@@ -34,3 +41,7 @@ for bundle in "$BIN_PATH"/*.bundle; do
 done
 codesign --force --deep --sign - "$APP"
 printf '%s\n' "$APP"
+if [[ "${RET_PREPARE_QA:-0}" == "1" ]]; then
+  # Stable QA identity; source identity belongs in metadata, never the bundle ID.
+  python3 scripts/prepare-qa.py "$APP" --source-identity "$RET_SOURCE_IDENTITY"
+fi

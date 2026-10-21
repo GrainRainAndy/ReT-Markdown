@@ -132,6 +132,30 @@ export function renderMarkdown(source: string, options: RenderOptions = {}): Ren
   return render(source, options);
 }
 
+/** Editing uses the renderer's block grammar, including opaque/unclosed math.
+ * Only ordinary top-level prose receives live paragraph breaks. Containers,
+ * HTML, headings, tables and code retain their existing Enter semantics.
+ */
+export function isOrdinaryParagraphRange(source: string, from: number, to: number): boolean {
+  const env = createEnv(source, {}), tokens = md.parse(source, env), starts = [0];
+  for (let i = 0; i < env.normalized.length; i++) if (env.normalized[i] === '\n') starts.push(i + 1);
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token.type !== 'paragraph_open' || token.level !== 0 || !token.map) continue;
+    const start = env.offsets[starts[token.map[0]]];
+    let end = starts[token.map[1]] ?? env.normalized.length;
+    if (env.normalized[end - 1] === '\n') end--;
+    if (from < start || to > env.offsets[end]) continue;
+    return !(tokens[i + 1]?.children ?? []).some(child => {
+      if (!/^math_(inline|block)$/.test(child.type)) return false;
+      const meta = child.meta as { from: number; to: number; closed: boolean };
+      return from === to ? from > meta.from && (from < meta.to || !meta.closed && from === meta.to)
+        : from < meta.to && to > meta.from;
+    });
+  }
+  return false;
+}
+
 /** Inline projections share document references, safe renderer rules and original offsets. */
 export interface InlineContextResult extends RenderResult { href: string | null }
 export function renderInlineContexts(

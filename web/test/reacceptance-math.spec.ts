@@ -14,6 +14,7 @@ test.beforeAll(async () => {
   });
   bundle = result.outputFiles[0].text;
   styles = (await Promise.all(['typography', 'palette'].map(name => readFile(`web/styles/${name}.css`, 'utf8')))).join('\n');
+  styles += (await readFile('node_modules/katex/dist/katex.min.css', 'utf8')).replace(/@font-face\{[^}]*\}/g, '');
 });
 test.beforeEach(async ({ page }) => {
   const failures: string[] = [];
@@ -88,9 +89,20 @@ for (const { name, start, continuation } of [
     const from = source.indexOf('$$'), to = source.lastIndexOf('$$') + 2;
     const widget = page.locator('.cm-live-math');
 
-    await widget.click();
+    // Hit the actual numerator rather than the full-width display container.
+    const point = await widget.locator('.katex-html').evaluate(element => {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const at = node.textContent!.indexOf('1'); if (at < 0) continue;
+        const range = document.createRange(); range.setStart(node, at); range.setEnd(node, at + 1);
+        const box = range.getBoundingClientRect();
+        return { x: box.left + box.width * .9, y: (box.top + box.bottom) / 2 };
+      }
+      throw new Error('Missing fraction numerator');
+    });
+    await page.mouse.click(point.x, point.y);
     await expect(widget).toHaveCount(0);
-    expect(await page.evaluate(() => (window as any).session.state.selection.main.head)).toBe(from + 1);
+    expect(await page.evaluate(() => (window as any).session.state.selection.main.head)).toBe(source.indexOf('{1}') + 2);
     expect(await page.evaluate(() => (window as any).session.view.hasFocus)).toBe(true);
     await expect(page.locator('#editor')).toContainText('\\frac{1}{2}');
     const caret = await page.evaluate(() => {

@@ -71,8 +71,11 @@ for(const width of [1000,1400,1800]) test(`AC9 actual CM paragraph gaps, formula
  const p1=page.locator('#editor .cm-live-paragraph').filter({hasText:'alpha'}),p2=page.locator('#editor .cm-live-paragraph').filter({hasText:'second'});
  expect((await p1.innerText()).replace(/\s+/g,' ').trim()).toBe('alpha soft');
  const a=(await p1.boundingBox())!,b=(await p2.boundingBox())!,ra=(await page.locator('#reference p').filter({hasText:'alpha'}).boundingBox())!,rb=(await page.locator('#reference p').filter({hasText:'second'}).boundingBox())!;
- expect(a.height).toBeCloseTo(ra.height,0);expect(b.y-a.y-a.height).toBeCloseTo(rb.y-ra.y-ra.height,0);
  const scroller=await page.locator('#editor > .cm-editor > .cm-scroller').evaluate(el=>{const s=getComputedStyle(el);return {font:parseFloat(s.fontSize),line:parseFloat(s.lineHeight)};});expect(scroller.line/scroller.font).toBeCloseTo(1.6,3);
+ // Four source LF characters include two intentional extra blank rows. The
+ // ordinary renderer paragraph margin remains, with two editable row heights.
+ await expect(page.locator('#editor .cm-live-blank')).toHaveCount(2);
+ expect(a.height).toBeCloseTo(ra.height,0);expect(b.y-a.y-a.height).toBeCloseTo(rb.y-ra.y-ra.height+2*scroller.line,0);
  const formula=(await page.locator('#editor .cm-live-math-block .katex').first().boundingBox())!,content=(await page.locator('#editor > .cm-editor > .cm-scroller > .cm-content').boundingBox())!;
  expect(formula.x+formula.width/2).toBeCloseTo(content.x+content.width/2,0);
  const table=(await page.locator('#editor .cm-live-table table').boundingBox())!,refTable=(await page.locator('#reference table').boundingBox())!;

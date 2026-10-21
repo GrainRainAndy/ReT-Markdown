@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit",
     "typecheck:render": "tsc --noEmit --project tsconfig.render.json",
     "test:render": "vitest run web/test/render.test.ts web/test/build.test.ts",
+    "test:interaction": "playwright test",
     "build:web": "node scripts/build-web.mjs",
     "test:browser": "node web/test/render-browser.mjs"
   },

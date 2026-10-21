@@ -3,11 +3,22 @@ import AppKit
 @MainActor
 final class MenuController: NSObject, NSMenuItemValidation {
     private var zoom = 1.0
+    private let appearancePreferences: AppearancePreferences
+    private lazy var settings = SettingsWindowController(preferences: appearancePreferences)
     private var document: MarkdownDocument? { NSDocumentController.shared.currentDocument as? MarkdownDocument }
+
+    init(appearancePreferences: AppearancePreferences = AppearancePreferences()) {
+        self.appearancePreferences = appearancePreferences
+        super.init()
+    }
+
     func install() {
         let bar = NSMenu(); NSApp.mainMenu = bar
         let app = submenu("ReT Markdown", in: bar)
         item("About ReT Markdown", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), in: app)
+        app.addItem(.separator())
+        let settings = item("Settings…", #selector(showSettings(_:)), key: ",", in: app)
+        settings.target = self
         app.addItem(.separator())
         item("Hide ReT Markdown", #selector(NSApplication.hide(_:)), key: "h", in: app)
         item("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), key: "h", modifiers: [.command, .option], in: app)
@@ -78,6 +89,9 @@ final class MenuController: NSObject, NSMenuItemValidation {
     @objc private func saveCurrentDocumentAs(_ sender: Any?) {
         document?.saveAs(nil)
     }
+    @objc private func showSettings(_ sender: Any?) {
+        settings.showWindow(sender)
+    }
     @objc private func toggleMode(_ sender: Any?) {
         execute(EditorCommand(name: "setMode", args: .object(["mode": .string(document?.bridge.state.mode == .source ? "live" : "source")])))
     }
@@ -86,6 +100,7 @@ final class MenuController: NSObject, NSMenuItemValidation {
         execute(EditorCommand(name: "setZoom", args: .object(["zoom": .number(zoom)])))
     }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(showSettings(_:)) { return true }
         guard let document else { return false }
         if let command = menuItem.representedObject as? EditorCommand {
             if command.name == "undo" { return document.bridge.isReady && document.bridge.state.canUndo }

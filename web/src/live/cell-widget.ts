@@ -7,6 +7,7 @@ import { applyPatches } from '../editor/source';
 import { renderTableCells, type RenderResult } from '../render/markdown';
 import { cellPosition, parseTable, tablePatches, tableTab, type Table, type TableAction } from './tables';
 import { cellOffset, observeTable, tableHitField, tableHits } from './table-interactions';
+import { mathHitOffset } from './math-hit';
 
 const controllers = new WeakMap<HTMLElement, TableController>();
 interface CellEditor { host:HTMLElement; row:number; column:number; view?:EditorView; syncing:boolean; composing:boolean }
@@ -56,6 +57,7 @@ class TableController {
         host.tabIndex=0;host.setAttribute('aria-label',`Row ${r+1}, column ${c+1}`);
         const entry:CellEditor={host,row:r,column:c,syncing:false,composing:false};
         this.cells.push(entry);this.paint(entry,cell.text);tr.append(host);
+        host.addEventListener('mousedown',event=>this.mathMouseDown(entry,event));
         host.addEventListener('click',()=>this.focus(entry));
         host.addEventListener('focus',()=>this.focus(entry));
         host.addEventListener('contextmenu',event=>{event.preventDefault();this.context(entry,event);});
@@ -65,6 +67,26 @@ class TableController {
   private paint(cell:CellEditor,_text:string):void {
     const html=this.rendered[cell.row][cell.column].html;
     cell.host.innerHTML=html || '<br>';
+  }
+  private mathMouseDown(cell:CellEditor,event:MouseEvent):void {
+    if(this.dead || event.defaultPrevented) return;
+    // Native host focus would end the marked mini-view's ownership before click.
+    if(this.options.composition().composing || this.cells.some(c=>c.composing)) {
+      if(!cell.view?.hasFocus) event.preventDefault();
+      return;
+    }
+    if(event.button!==0 || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey || this.parent.state.readOnly || cell.view) return;
+    const wrapper=event.target instanceof Element ? event.target.closest<HTMLElement>('[data-math-from][data-math-to]') : null;
+    if(!wrapper || !cell.host.contains(wrapper)) return;
+    const from=Number(wrapper.dataset.mathFrom),to=Number(wrapper.dataset.mathTo);
+    const c=this.table.rows[cell.row].cells[cell.column],source=this.options.getSource().text;
+    if(!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from<c.from || to>c.to || to<=from || to>source.length) return;
+    const offset=mathHitOffset(wrapper,source.slice(from,to),false,event.clientX,event.clientY);
+    if(offset===null || !Number.isSafeInteger(offset) || offset<0 || offset>to-from) return;
+    // Resolve against the original raw range before focus destroys rendered math.
+    // cellOffset also removes table pipe escapes from the mini-view coordinate.
+    const local=cellOffset(c,from+offset,-1);
+    event.preventDefault();this.focus(cell,true,local);
   }
   update(table:Table,documentText:string):void {
     const shape=table.rows.length!==this.table.rows.length || table.rows[0].cells.length!==this.table.rows[0].cells.length;
@@ -105,6 +127,12 @@ class TableController {
       const hits=matches.filter(r=>r.from<c.to && r.to>c.from).map(r=>({from:cellOffset(c,Math.max(c.from,r.from),-1),to:cellOffset(c,Math.min(c.to,r.to),1)}));
       cell.host.toggleAttribute('data-table-match',hits.length>0);
       if(!cell.view) continue;
+      // A projected caret/search range or actual mini focus owns editing.
+      // Once both leave, repaint immediately rather than retaining raw TeX
+      // until a later cell activation happens to destroy this mini-view.
+      if(cell!==selected && !cell.view.hasFocus && !this.menu?.contains(document.activeElement)) {
+        cell.view.destroy();cell.view=undefined;this.paint(cell,c.text);continue;
+      }
       const local=cell===selected ? {
         anchor:cellOffset(c,selection.anchor,selection.anchor>selection.head?1:-1),
         head:cellOffset(c,selection.head,selection.head>selection.anchor?1:-1),
@@ -118,8 +146,8 @@ class TableController {
     // mini caret after setting its selection. Search-panel focus stays owned.
     if(selected && selection.empty && this.parent.hasFocus) selected.view?.focus();
   }
-  private focus(cell:CellEditor,takeFocus=true):void {
-    if(this.dead) return;
+  private focus(cell:CellEditor,takeFocus=true,offset?:number):void {
+    if(this.dead || (this.options.composition().composing || this.cells.some(c=>c.composing)) && !cell.composing) return;
     if(takeFocus) this.exitPosition=-1;
     if(!cell.view) {
       for(const other of this.cells) if(other!==cell && other.view && !other.composing) {
@@ -149,6 +177,11 @@ class TableController {
           else if(update.selectionSet && !cell.composing) this.mirrorSelection(cell);
         }),
         EditorView.domEventHandlers({
+          blur:()=>{
+            // Observe the completed focus handoff, including focus moving to
+            // a non-editor control, which produces no root transaction.
+            queueMicrotask(()=>this.projectSelection());return false;
+          },
           compositionstart:()=>{
             cell.composing=true;this.mirrorSelection(cell);
             // The session recognizes this annotation and opens its composition barrier.
@@ -163,7 +196,13 @@ class TableController {
             // before queued undo/mode commands. Never race a later apply against them.
             setTimeout(()=>{
               cell.composing=false;
+              if(this.dead) return;
+              // Root refresh can run while the mini composition flag still
+              // protects marked DOM. Rebuild that skipped cache before the
+              // first static repaint, not in a later root refresh.
+              this.update(this.table,this.options.getSource().text);
               for(const action of this.deferred.splice(0)) this.run(action);
+              this.projectSelection();
             },0);return false;
           },
           copy:event=>this.clipboard(cell,event,false),
@@ -177,6 +216,13 @@ class TableController {
           },
         }),
       ]})});
+    }
+    if(offset!==undefined) {
+      // Install the target locally before focusing/mirroring. A root dispatch at
+      // the mini-view's initial zero caret can rebuild the widget and race focus.
+      cell.syncing=true;
+      try {cell.view.dispatch({selection:{anchor:offset},annotations:Transaction.addToHistory.of(false)});}
+      finally {cell.syncing=false;}
     }
     if(takeFocus) {cell.view.focus();this.mirrorSelection(cell);}
   }
@@ -280,6 +326,7 @@ class TableController {
       window.removeEventListener('blur',dismiss);
       this.parent.scrollDOM.removeEventListener('scroll',dismiss);
       menu.remove();this.menu=undefined;this.closeMenu=undefined;
+      queueMicrotask(()=>this.projectSelection());
     };
     // Sibling of the root scroller: no table layout contribution or horizontal clipping.
     this.parent.dom.append(menu);

@@ -213,7 +213,22 @@ final class EditorBridge: NSObject, WKScriptMessageHandler {
         try mirror.acceptCapturedSnapshot(captured.snapshot)
         state.composing = captured.composing
         if before != mirror.snapshot.revision { onCommit?() }
-        respond(to: reply, type: .ack, payload: .object(["revision": .number(Double(captured.snapshot.revision))]))
+        let acknowledgement: NativeJSON = .object(["revision": .number(Double(captured.snapshot.revision))])
+        if purpose == .close {
+            // Closing may tear down the WebView as soon as this snapshot returns.
+            // Await its ACK directly; acknowledgements must bypass the request queue.
+            let result = try await invoke(envelope(.ack, payload: acknowledgement, replyTo: reply.id))
+            guard let result else { throw NativeEditorError.invalidMessage }
+            if result.type == .error {
+                throw NativeEditorError.commandFailed(String(describing: result.payload))
+            }
+            struct ACKResult: Decodable { let ok: Bool; let error: String? }
+            guard result.type == .result else { throw NativeEditorError.invalidMessage }
+            let confirmation = try result.payload.decoded(ACKResult.self)
+            guard confirmation.ok else { throw NativeEditorError.commandFailed(confirmation.error ?? "Close acknowledgement failed.") }
+        } else {
+            respond(to: reply, type: .ack, payload: acknowledgement)
+        }
         return captured.snapshot
     }
     func send(command: EditorCommand) async throws {
