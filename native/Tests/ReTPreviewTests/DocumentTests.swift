@@ -1,12 +1,12 @@
 import XCTest
 import AppKit
 @testable import ReTPreview
-final class DocumentTests: XCTestCase {
+final class DocumentTests: RecoveryIsolatedTestCase {
  func testSavingFrozenRevisionWhileNewInputArrivesKeepsNewInputDirty() async throws {
   let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".md")
   defer { try? FileManager.default.removeItem(at: url) }
   let document = await MainActor.run {
-   let doc = MarkdownDocument()
+   let doc = environment.makeDocument()
    _ = doc.accept(Snapshot(source: "revision one", revision: 1))
    doc.prepareAssetsForSave = { _, snapshot, completion in
     XCTAssertEqual(snapshot.source, "revision one")
@@ -27,7 +27,7 @@ final class DocumentTests: XCTestCase {
    XCTAssertTrue(document.state.isDirty)
    XCTAssertTrue(document.isDocumentEdited)
    document.prepareAssetsForSave = nil
-   document.close()
+   environment.close(document)
   }
  }
  func testSharedFidelityFixtureRoundTripsThroughNSDocument() async throws {
@@ -35,10 +35,10 @@ final class DocumentTests: XCTestCase {
   for _ in 0..<4 { root.deleteLastPathComponent() }
   let data = try Data(contentsOf: root.appendingPathComponent("fixtures/fidelity.md"))
   try await MainActor.run {
-   let document = MarkdownDocument()
+   let document = environment.makeDocument()
    try document.read(from: data, ofType: "net.daringfireball.markdown")
    XCTAssertEqual(try document.data(ofType: "net.daringfireball.markdown"), data)
-   document.close()
+   environment.close(document)
   }
  }
 
@@ -51,7 +51,7 @@ final class DocumentTests: XCTestCase {
   try original.write(to: url)
   let document = try await MainActor.run {
    _ = NSApplication.shared
-   let doc = MarkdownDocument()
+   let doc = environment.makeDocument()
    try doc.read(from: original, ofType: "net.daringfireball.markdown")
    doc.fileURL = url
    _ = doc.accept(Snapshot(source: "\u{FEFF}edited\r\n", revision: 1))
@@ -74,12 +74,12 @@ final class DocumentTests: XCTestCase {
   }
   XCTAssertNotNil(conflict)
   XCTAssertEqual(try Data(contentsOf: url), Data("external".utf8))
-  await MainActor.run { XCTAssertTrue(document.state.isDirty); document.close() }
+  await MainActor.run { XCTAssertTrue(document.state.isDirty); environment.close(document) }
  }
  func testManualSaveWithoutFlushCannotWriteOldCheckpoint() async throws {
   let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
   defer { try? FileManager.default.removeItem(at: root) }
-  let document = await MainActor.run { MarkdownDocument() }
+  let document = await MainActor.run { environment.makeDocument() }
   let error: Error? = await withCheckedContinuation { continuation in
    Task { @MainActor in
     document.save(to: root, ofType: "net.daringfireball.markdown", for: .saveAsOperation) { continuation.resume(returning: $0) }
@@ -87,6 +87,6 @@ final class DocumentTests: XCTestCase {
   }
   XCTAssertNotNil(error)
   XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
-  await MainActor.run { document.close() }
+  await MainActor.run { environment.close(document) }
  }
 }

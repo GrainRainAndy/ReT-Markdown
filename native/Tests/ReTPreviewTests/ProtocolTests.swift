@@ -1,6 +1,6 @@
 import XCTest
 @testable import ReTPreview
-final class ProtocolTests: XCTestCase {
+final class ProtocolTests: RecoveryIsolatedTestCase {
  func testTrustIdentityAndSchemaAreRequired() {
   let valid: [String: Any] = ["v":1,"documentId":"doc","epoch":"epoch","requestId":"id","method":"checkpoint","payload":["source":"hi","revision":1,"dirty":true]]
   XCTAssertNotNil(BridgeEnvelope.parse(valid, trusted: true, documentID: "doc", epoch: "epoch"))

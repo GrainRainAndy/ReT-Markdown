@@ -1,6 +1,6 @@
 import XCTest
 @testable import ReTPreview
-final class RecoveryDraftTests: XCTestCase {
+final class RecoveryDraftTests: RecoveryIsolatedTestCase {
  private func draft(_ revision: Int = 0) -> RecoveryDraft {
   RecoveryDraft(baseRevision: revision, owner: "prose", format: "prosemirror-json", content: "{\"text\":\"未提交的中文\"}", recoverySource: "可恢复源文\r\n", reason: "unsupported step")
  }
@@ -34,7 +34,7 @@ final class RecoveryDraftTests: XCTestCase {
  func testRecoveredCopyRetainsRevisionZeroAndDraft() async {
   let record = RecoveryRecord(documentID: "doc", fileURL: nil, snapshot: Snapshot(source: "baseline", revision: 0), date: Date(), recoveryDraft: draft())
   await MainActor.run {
-   let document = MarkdownDocument()
+   let document = environment.makeDocument()
    document.restore(record)
    XCTAssertEqual(document.state.received.revision, 0)
    XCTAssertEqual(document.state.received.source, "baseline")
@@ -47,7 +47,7 @@ final class RecoveryDraftTests: XCTestCase {
    document.rendererWillRestart()
    XCTAssertNotEqual(oldEpoch, document.state.epoch)
    XCTAssertEqual((document.loadPayload["recoveryDraft"] as? [String: Any])?["content"] as? String, "{\"text\":\"未提交的中文\"}")
-   document.close()
+   environment.close(document)
   }
  }
  func testProtocolAcceptsDraftDataAndRejectsMalformedResolutionFlag() {

@@ -9,7 +9,7 @@ import AppKit
   responses.append(shouldClose); completed?()
  }
 }
-final class LifecycleTests: XCTestCase {
+final class LifecycleTests: RecoveryIsolatedTestCase {
  func testRejectedQueuedSaveDrainsCloseAndCancelAllowsAnotherClose() async throws {
   let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -18,7 +18,7 @@ final class LifecycleTests: XCTestCase {
   let secondSave = expectation(description: "save B rejects")
   let document = await MainActor.run { () -> MarkdownDocument in
    _ = NSApplication.shared
-   let document = MarkdownDocument(recoveryStore: RecoveryStore(directory: root.appendingPathComponent("recovery")), recoveryQueue: DispatchQueue(label: "test.close.recovery"))
+   let document = environment.makeDocument()
    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
    document.addWindowController(NSWindowController(window: window))
    _ = document.accept(Snapshot(source: "save A", revision: 1))
@@ -50,7 +50,7 @@ final class LifecycleTests: XCTestCase {
    }
    await fulfillment(of: [cancelled], timeout: 1)
   }
-  await MainActor.run { XCTAssertEqual(observer.responses, [false, false]); document.close() }
+  await MainActor.run { XCTAssertEqual(observer.responses, [false, false]); environment.close(document) }
  }
  func testDelayedReloadCannotDiscardNewCheckpointAndDraft() async throws {
   let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -58,10 +58,10 @@ final class LifecycleTests: XCTestCase {
   defer { try? FileManager.default.removeItem(at: root) }
   let url = root.appendingPathComponent("external.md")
   try Data("external".utf8).write(to: url)
-  let queue = DispatchQueue(label: "test.delayed.recovery")
+  let queue = environment.recoveryQueue
   queue.suspend()
   let document = await MainActor.run { () -> MarkdownDocument in
-   let document = MarkdownDocument(recoveryStore: RecoveryStore(directory: root.appendingPathComponent("recovery")), recoveryQueue: queue)
+   let document = environment.makeDocument()
    _ = document.accept(Snapshot(source: "revision N", revision: 1))
    document.reloadExternal(url)
    _ = document.accept(Snapshot(source: "revision N+1", revision: 2))
@@ -76,10 +76,10 @@ final class LifecycleTests: XCTestCase {
    XCTAssertEqual(document.state.received.source, "revision N+1")
    XCTAssertEqual(document.state.recoveryDraft?.content, "pending input")
    XCTAssertTrue(document.isDocumentEdited)
-   let durable = RecoveryStore(directory: root.appendingPathComponent("recovery")).latest(documentID: document.state.documentID)
+   let durable = environment.recoveryStore.latest(documentID: document.state.documentID)
    XCTAssertEqual(durable?.snapshot.source, "revision N+1")
    XCTAssertEqual(durable?.recoveryDraft?.content, "pending input")
-   document.close()
+   environment.close(document)
   }
  }
  func testDelayedReloadRejectsEpochOrDraftChangesAtSameRevision() async throws {
@@ -89,10 +89,10 @@ final class LifecycleTests: XCTestCase {
    defer { try? FileManager.default.removeItem(at: root) }
    let url = root.appendingPathComponent("external.md")
    try Data("external".utf8).write(to: url)
-   let queue = DispatchQueue(label: "test.reload.identity")
+   let queue = environment.recoveryQueue
    queue.suspend()
    let document = await MainActor.run { () -> MarkdownDocument in
-    let document = MarkdownDocument(recoveryStore: RecoveryStore(directory: root.appendingPathComponent("recovery")), recoveryQueue: queue)
+    let document = environment.makeDocument()
     _ = document.accept(Snapshot(source: "local", revision: 1))
     document.reloadExternal(url)
     if changeEpoch { document.rendererWillRestart() }
@@ -106,13 +106,13 @@ final class LifecycleTests: XCTestCase {
    await MainActor.run {
     XCTAssertEqual(document.state.received.source, "local")
     if !changeEpoch { XCTAssertEqual(document.state.recoveryDraft?.content, "pending") }
-    document.close()
+    environment.close(document)
    }
   }
  }
  func testLoadCarriesSavedBaselineAcrossRestartAndRecoveredCopy() async throws {
   try await MainActor.run {
-   let document = MarkdownDocument()
+   let document = environment.makeDocument()
    try document.read(from: Data("\u{FEFF}saved\r\n".utf8), ofType: "net.daringfireball.markdown")
    _ = document.accept(Snapshot(source: "edited", revision: 1))
    document.rendererWillRestart()
@@ -121,7 +121,7 @@ final class LifecycleTests: XCTestCase {
    document.restore(RecoveryRecord(documentID: UUID().uuidString, fileURL: nil, snapshot: Snapshot(source: "recovered", revision: 7), date: Date()))
    XCTAssertEqual(document.loadPayload["savedSource"] as? String, "")
    XCTAssertEqual(document.loadPayload["source"] as? String, "recovered")
-   document.close()
+   environment.close(document)
   }
  }
 }

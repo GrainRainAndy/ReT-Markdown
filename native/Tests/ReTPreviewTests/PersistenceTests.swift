@@ -1,6 +1,6 @@
 import XCTest
 @testable import ReTPreview
-final class PersistenceTests: XCTestCase {
+final class PersistenceTests: RecoveryIsolatedTestCase {
  func testUTF8BOMAndCRLFRoundTrip() throws {
   let bytes = Data([0xEF,0xBB,0xBF] + Array("中文\r\n\r\nlast  \n".utf8))
   XCTAssertEqual(UTF8File.encode(try UTF8File.decode(bytes)), bytes)
