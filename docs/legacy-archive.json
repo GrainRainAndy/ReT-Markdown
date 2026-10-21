@@ -1,0 +1,11 @@
+{
+  "branch": "legacy/archive-2026-10-21",
+  "tag": "legacy-archive-2026-10-21",
+  "commit": "01510ed75284d2ac4c05a11ccf1f4ec250108b07",
+  "prearchive_head": "465505e747b591d262247d52d6cbfac9da0099ee",
+  "verified_files": 248,
+  "snapshot_bytes": 2163817,
+  "local_archive": ".legacy-local/legacy-2026-10-21.tar.gz",
+  "archive_sha256": "8b9b38958b784817afef5f82a2869ea312324921c94cbb2fe649f94775e2f666",
+  "archive_policy": "as-is preservation; no claim of test or release readiness"
+}

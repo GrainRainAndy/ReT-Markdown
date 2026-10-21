@@ -1,0 +1,14 @@
+# Local reference application and private reverse-engineering evidence.
+/Typora.app/
+/analysis/
+
+# Archived source snapshot and local legacy artifacts.
+/.legacy-local/
+/build/
+/.build/
+/node_modules/
+/test-results/
+/playwright-report/
+/.swiftpm/
+.DS_Store
+*.xcuserstate

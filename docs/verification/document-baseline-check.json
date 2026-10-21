@@ -1,0 +1,15 @@
+{
+  "checked_at_utc": "2026-10-21T08:30:17.672344+00:00",
+  "scope": "documentation and local artifact integrity, not product behavior",
+  "markdown_files_checked": 7,
+  "requirements_traced": 27,
+  "editing_cases": 45,
+  "fault_cases": 17,
+  "legacy_files_verified": 248,
+  "legacy_commit": "01510ed75284d2ac4c05a11ccf1f4ec250108b07",
+  "reference_verification": "scripts/verify-reference.py passed; 683 entries and 9 exact modules",
+  "document_consistency_review": "editor and lifecycle focused reviews: original issues resolved; no remaining direct contradictions reported",
+  "product_tests_run": false,
+  "native_typora_runtime_observed_this_run": false,
+  "errors": []
+}

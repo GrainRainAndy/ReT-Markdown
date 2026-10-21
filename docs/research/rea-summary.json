@@ -1,0 +1,319 @@
+{
+  "evidence_id": "ev_f433856b8274012551e2cee4c7993e9d87c18cd74b6fa6d094f206bd3794c111",
+  "subject": {
+    "name": "core",
+    "digest": {
+      "sha256": "24e05c5cbf67c03612115656e3811083d43b9be684a92929fcce750068f4e596"
+    },
+    "format": "directory",
+    "architecture": null,
+    "local_path": "/Users/grainrain/Developer/GitHub/ReT-Markdown/analysis/typora-1.14.10/rewrite-20261021/core"
+  },
+  "provider": {
+    "id": "rea-analysis-view",
+    "name": "REA analysis view projection",
+    "version": "1"
+  },
+  "analysis_profile": null,
+  "predicate_type": "rea.analysis-view",
+  "operation": "inspect_analysis_view",
+  "parameters": {
+    "parent_evidence_id": "ev_2b14a22949584d49104a69afecfc3c412bd1629f3a93af73c01b6de8da806bbb",
+    "view": {
+      "kind": "summary"
+    }
+  },
+  "raw_result": null,
+  "normalized_result": {
+    "kind": "summary",
+    "view": {
+      "kind": "summary"
+    },
+    "summary": {
+      "input_path": "/Users/grainrain/Developer/GitHub/ReT-Markdown/analysis/typora-1.14.10/rewrite-20261021/core",
+      "format": "directory",
+      "root_artifact_sha256": "24e05c5cbf67c03612115656e3811083d43b9be684a92929fcce750068f4e596",
+      "statistics": {
+        "relevant_files": 9,
+        "nested_asar_containers": 0,
+        "text_bytes_read": 208117,
+        "invalid_utf8_files": 0,
+        "parsed_javascript_files": 9,
+        "visited_ast_nodes": 57718,
+        "findings": 398,
+        "modules": 0,
+        "parse_failures": 0
+      },
+      "electron": {
+        "browser_windows": 0,
+        "explicit_web_preferences": 0,
+        "preload_entrypoints": 0,
+        "context_bridge_apis": 0,
+        "exposed_api_members": 0,
+        "ipc": {
+          "operations": 0,
+          "literal_channels": 0,
+          "dynamic_channel_operations": 0,
+          "renderer_transmissions": 0,
+          "renderer_listeners": 0,
+          "main_handlers": 0,
+          "paired_renderer_transmissions": 0,
+          "ambiguous_renderer_transmissions": 0,
+          "unpaired_literal_renderer_transmissions": 0
+        },
+        "sender_validation_observations": 0,
+        "utility_processes": 0,
+        "resolved_utility_entrypoints": 0,
+        "native_addon_bindings": 0,
+        "resolved_native_addon_bindings": 0
+      },
+      "coverage": {
+        "application": {
+          "status": "partial",
+          "truncated": false,
+          "omitted_count": null,
+          "limits": [
+            {
+              "name": "javascript_analysis_parent_result_budget_bytes",
+              "value": 2007447072,
+              "unit": "bytes"
+            },
+            {
+              "name": "javascript_analysis_semantic_result_budget_bytes",
+              "value": 0,
+              "unit": "bytes"
+            },
+            {
+              "name": "javascript_analysis_worker_heap_limit_bytes",
+              "value": 1098907648,
+              "unit": "bytes"
+            },
+            {
+              "name": "javascript_analysis_worker_timeout_ms",
+              "value": 60000,
+              "unit": "milliseconds"
+            }
+          ]
+        },
+        "semantic": {
+          "status": "partial",
+          "truncated": true,
+          "omitted_nodes": null,
+          "omitted_relations": null,
+          "limits": [
+            {
+              "name": "javascript_analysis_semantic_result_budget_bytes",
+              "value": 0,
+              "unit": "bytes"
+            },
+            {
+              "name": "javascript_analysis_worker_heap_limit_bytes",
+              "value": 1098907648,
+              "unit": "bytes"
+            },
+            {
+              "name": "javascript_analysis_worker_timeout_ms",
+              "value": 60000,
+              "unit": "milliseconds"
+            }
+          ],
+          "families": [
+            {
+              "family": "boundary",
+              "status": "partial",
+              "retained_relations": 14,
+              "omitted_relations": null,
+              "unknown_count": 7
+            },
+            {
+              "family": "call-flow",
+              "status": "partial",
+              "retained_relations": 951,
+              "omitted_relations": null,
+              "unknown_count": 3590
+            },
+            {
+              "family": "child-process",
+              "status": "partial",
+              "retained_relations": 0,
+              "omitted_relations": null,
+              "unknown_count": 3
+            },
+            {
+              "family": "closure",
+              "status": "partial",
+              "retained_relations": 2651,
+              "omitted_relations": null,
+              "unknown_count": 3
+            },
+            {
+              "family": "configuration",
+              "status": "partial",
+              "retained_relations": 0,
+              "omitted_relations": null,
+              "unknown_count": 3
+            },
+            {
+              "family": "data-flow",
+              "status": "partial",
+              "retained_relations": 25956,
+              "omitted_relations": null,
+              "unknown_count": 1553
+            },
+            {
+              "family": "event",
+              "status": "partial",
+              "retained_relations": 52,
+              "omitted_relations": null,
+              "unknown_count": 54
+            },
+            {
+              "family": "object-flow",
+              "status": "partial",
+              "retained_relations": 3988,
+              "omitted_relations": null,
+              "unknown_count": 6087
+            },
+            {
+              "family": "promise-ownership",
+              "status": "partial",
+              "retained_relations": 99,
+              "omitted_relations": null,
+              "unknown_count": 64
+            },
+            {
+              "family": "request",
+              "status": "partial",
+              "retained_relations": 0,
+              "omitted_relations": null,
+              "unknown_count": 3
+            },
+            {
+              "family": "resource-lifecycle",
+              "status": "partial",
+              "retained_relations": 0,
+              "omitted_relations": null,
+              "unknown_count": 3
+            },
+            {
+              "family": "timer",
+              "status": "partial",
+              "retained_relations": 73,
+              "omitted_relations": null,
+              "unknown_count": 19
+            }
+          ]
+        },
+        "application_unknowns": 6,
+        "semantic_unknowns": 11389
+      },
+      "limitation_count": 12
+    },
+    "parent_evidence_id": "ev_2b14a22949584d49104a69afecfc3c412bd1629f3a93af73c01b6de8da806bbb",
+    "parent_operation": "analyze_javascript_application",
+    "parent_digest": "2b14a22949584d49104a69afecfc3c412bd1629f3a93af73c01b6de8da806bbb",
+    "view_digest": "972262d5ccfc58128ba36895382c13820128d143efcd7a3609d1634595bdc421",
+    "artifact": {
+      "path": "/Users/grainrain/Developer/GitHub/ReT-Markdown/analysis/typora-1.14.10/rewrite-20261021/core",
+      "sha256": "24e05c5cbf67c03612115656e3811083d43b9be684a92929fcce750068f4e596"
+    },
+    "coverage": {
+      "status": "complete-within-view",
+      "examined": 15,
+      "total": 51,
+      "next_offset": null,
+      "exhausted": true
+    },
+    "limitations": [
+      "Boundary extraction covers unshadowed JSON/global coercions plus parse and validation method candidates.",
+      "Child-process extraction covers asynchronous node:child_process creation, literal argv/env/stdio options, exit/error listeners, and kill signals.",
+      "CommonJS and ESM binding relationships were recovered from inert syntax and resolved only within the inventoried artifact container.",
+      "Configuration extraction covers process.env, process.argv, node:fs reads, and direct logical defaults.",
+      "Event extraction covers EventEmitter-style literal registrations, removals, and dispatch candidates; dynamic names remain unknown.",
+      "Function fingerprints are static candidates; equal digests can remain ambiguous and do not prove behavioral equivalence.",
+      "Graph coverage is incomplete; unavailable facts remain explicit and must not be read as absence.",
+      "JavaScript and HTML were parsed as inert text; bundle bootstrap code was never executed.",
+      "Local data flow does not claim control-flow-sensitive reaching definitions or arbitrary dynamic property resolution.",
+      "Node2Mark.js: Resource constraint during analyze_javascript_application: Node2Mark.js: Resource constraint during analyze_javascript_application: The parent reserved its remaining result capacity for static observations; semantic analysis of Node2Mark.js was not started",
+      "NodeDef.js: Resource constraint during analyze_javascript_application: NodeDef.js: Resource constraint during analyze_javascript_application: The parent reserved its remaining result capacity for static observations; semantic analysis of NodeDef.js was not started",
+      "Promise ownership covers explicit unshadowed Promise construction, static factories, aggregation, chaining, and await syntax only.",
+      "Request extraction covers fetch, WebSocket, node:http/node:https construction, direct option fields, and exact local response consumers.",
+      "Resource constraint during analyze_javascript_application: Expanded application relationships for Node2Mark.js exceed the parent's result budget; complete static facts were retained on the file node",
+      "Resource constraint during analyze_javascript_application: Expanded application relationships for NodeDef.js exceed the parent's result budget; complete static facts were retained on the file node",
+      "Resource constraint during analyze_javascript_application: Expanded application relationships for SourceView.js exceed the parent's result budget; complete static facts were retained on the file node",
+      "Resource extraction covers built-in filesystem/network acquisition and exact local close/destroy/end handles.",
+      "SourceView.js: Resource constraint during analyze_javascript_application: SourceView.js: Resource constraint during analyze_javascript_application: The parent reserved its remaining result capacity for static observations; semantic analysis of SourceView.js was not started",
+      "Static imports, entrypoints, workers, endpoints, and storage relationships do not prove runtime execution.",
+      "Static paths and relationships may remain unresolved when expressions are dynamic or obfuscated.",
+      "The semantic graph contains static syntax observations and conservative relationship candidates; it does not claim runtime execution.",
+      "Timer extraction covers global or node:timers scheduling and exact local-handle cancellation.",
+      "Webpack/Rspack factories were recovered from AST literals; REA did not invoke push handlers or bundle bootstrap code."
+    ],
+    "unknowns": [
+      "11389 semantic graph unknowns remain in the parent Evidence.",
+      "6 application graph unknowns remain in the parent Evidence.",
+      "Boundary extraction covers unshadowed JSON/global coercions plus parse and validation method candidates.",
+      "Child-process extraction covers asynchronous node:child_process creation, literal argv/env/stdio options, exit/error listeners, and kill signals.",
+      "CommonJS and ESM binding relationships were recovered from inert syntax and resolved only within the inventoried artifact container.",
+      "Configuration extraction covers process.env, process.argv, node:fs reads, and direct logical defaults.",
+      "Event extraction covers EventEmitter-style literal registrations, removals, and dispatch candidates; dynamic names remain unknown.",
+      "Function fingerprints are static candidates; equal digests can remain ambiguous and do not prove behavioral equivalence.",
+      "Graph coverage is incomplete; unavailable facts remain explicit and must not be read as absence.",
+      "JavaScript and HTML were parsed as inert text; bundle bootstrap code was never executed.",
+      "Local data flow does not claim control-flow-sensitive reaching definitions or arbitrary dynamic property resolution.",
+      "Node2Mark.js: Resource constraint during analyze_javascript_application: Node2Mark.js: Resource constraint during analyze_javascript_application: The parent reserved its remaining result capacity for static observations; semantic analysis of Node2Mark.js was not started",
+      "NodeDef.js: Resource constraint during analyze_javascript_application: NodeDef.js: Resource constraint during analyze_javascript_application: The parent reserved its remaining result capacity for static observations; semantic analysis of NodeDef.js was not started",
+      "Promise ownership covers explicit unshadowed Promise construction, static factories, aggregation, chaining, and await syntax only.",
+      "Request extraction covers fetch, WebSocket, node:http/node:https construction, direct option fields, and exact local response consumers.",
+      "Resource constraint during analyze_javascript_application: Expanded application relationships for Node2Mark.js exceed the parent's result budget; complete static facts were retained on the file node",
+      "Resource constraint during analyze_javascript_application: Expanded application relationships for NodeDef.js exceed the parent's result budget; complete static facts were retained on the file node",
+      "Resource constraint during analyze_javascript_application: Expanded application relationships for SourceView.js exceed the parent's result budget; complete static facts were retained on the file node",
+      "Resource extraction covers built-in filesystem/network acquisition and exact local close/destroy/end handles.",
+      "SourceView.js: Resource constraint during analyze_javascript_application: SourceView.js: Resource constraint during analyze_javascript_application: The parent reserved its remaining result capacity for static observations; semantic analysis of SourceView.js was not started",
+      "Static imports, entrypoints, workers, endpoints, and storage relationships do not prove runtime execution.",
+      "Static paths and relationships may remain unresolved when expressions are dynamic or obfuscated.",
+      "The semantic graph contains static syntax observations and conservative relationship candidates; it does not claim runtime execution.",
+      "Timer extraction covers global or node:timers scheduling and exact local-handle cancellation.",
+      "Webpack/Rspack factories were recovered from AST literals; REA did not invoke push handlers or bundle bootstrap code.",
+      "graph.coverage.status is partial",
+      "semantic_graph.coverage.status is partial"
+    ]
+  },
+  "confidence": "derived",
+  "authority": "shipped-artifact",
+  "environment": null,
+  "limitations": [
+    "Boundary extraction covers unshadowed JSON/global coercions plus parse and validation method candidates.",
+    "Child-process extraction covers asynchronous node:child_process creation, literal argv/env/stdio options, exit/error listeners, and kill signals.",
+    "CommonJS and ESM binding relationships were recovered from inert syntax and resolved only within the inventoried artifact container.",
+    "Configuration extraction covers process.env, process.argv, node:fs reads, and direct logical defaults.",
+    "Event extraction covers EventEmitter-style literal registrations, removals, and dispatch candidates; dynamic names remain unknown.",
+    "Function fingerprints are static candidates; equal digests can remain ambiguous and do not prove behavioral equivalence.",
+    "Graph coverage is incomplete; unavailable facts remain explicit and must not be read as absence.",
+    "JavaScript and HTML were parsed as inert text; bundle bootstrap code was never executed.",
+    "Local data flow does not claim control-flow-sensitive reaching definitions or arbitrary dynamic property resolution.",
+    "Node2Mark.js: Resource constraint during analyze_javascript_application: Node2Mark.js: Resource constraint during analyze_javascript_application: The parent reserved its remaining result capacity for static observations; semantic analysis of Node2Mark.js was not started",
+    "NodeDef.js: Resource constraint during analyze_javascript_application: NodeDef.js: Resource constraint during analyze_javascript_application: The parent reserved its remaining result capacity for static observations; semantic analysis of NodeDef.js was not started",
+    "Promise ownership covers explicit unshadowed Promise construction, static factories, aggregation, chaining, and await syntax only.",
+    "Request extraction covers fetch, WebSocket, node:http/node:https construction, direct option fields, and exact local response consumers.",
+    "Resource constraint during analyze_javascript_application: Expanded application relationships for Node2Mark.js exceed the parent's result budget; complete static facts were retained on the file node",
+    "Resource constraint during analyze_javascript_application: Expanded application relationships for NodeDef.js exceed the parent's result budget; complete static facts were retained on the file node",
+    "Resource constraint during analyze_javascript_application: Expanded application relationships for SourceView.js exceed the parent's result budget; complete static facts were retained on the file node",
+    "Resource extraction covers built-in filesystem/network acquisition and exact local close/destroy/end handles.",
+    "SourceView.js: Resource constraint during analyze_javascript_application: SourceView.js: Resource constraint during analyze_javascript_application: The parent reserved its remaining result capacity for static observations; semantic analysis of SourceView.js was not started",
+    "Static imports, entrypoints, workers, endpoints, and storage relationships do not prove runtime execution.",
+    "Static paths and relationships may remain unresolved when expressions are dynamic or obfuscated.",
+    "The semantic graph contains static syntax observations and conservative relationship candidates; it does not claim runtime execution.",
+    "Timer extraction covers global or node:timers scheduling and exact local-handle cancellation.",
+    "Webpack/Rspack factories were recovered from AST literals; REA did not invoke push handlers or bundle bootstrap code."
+  ],
+  "locations": [
+    {
+      "kind": "artifact-path",
+      "path": "/Users/grainrain/Developer/GitHub/ReT-Markdown/analysis/typora-1.14.10/rewrite-20261021/core"
+    }
+  ],
+  "evidence_links": [
+    "ev_2b14a22949584d49104a69afecfc3c412bd1629f3a93af73c01b6de8da806bbb"
+  ]
+}

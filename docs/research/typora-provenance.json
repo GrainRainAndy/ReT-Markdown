@@ -1,0 +1,357 @@
+{
+  "reference_root": "Typora.app",
+  "bundle_info": {
+    "CFBundleIdentifier": "abnerworks.Typora",
+    "CFBundleShortVersionString": "1.14.10",
+    "CFBundleVersion": "7786"
+  },
+  "manifest_sha256": "ee2d7a553e0d88c5b34df7704205d579f230386e51b4dd465631410da12cb057",
+  "manifest_algorithm": "SHA256 of JSON files list sorted by path, sort_keys=True, separators=(comma,colon), ensure_ascii=True; entries cover files and symlinks, exclude directories",
+  "entry_count": 683,
+  "key_files": [
+    {
+      "path": "Contents/Info.plist",
+      "kind": "file",
+      "sha256": "ff0f86c8ff2a5484b6c3e5df9c5258cdb7882aca6ef2920468c4fe54f6679269",
+      "size": 6932,
+      "executable": false
+    },
+    {
+      "path": "Contents/MacOS/Typora",
+      "kind": "file",
+      "sha256": "71aebecaac7b21965c541113b6e0d9b792a095f44aa487a0a6366f224fcbb83a",
+      "size": 3328736,
+      "executable": true
+    },
+    {
+      "path": "Contents/Resources/TypeMark/appsrc/main.js",
+      "kind": "file",
+      "sha256": "8e716a084097a976ab9ed8ea06d8f0b505f14a8dc0c022b3dc1a09a741225e16",
+      "size": 1692606,
+      "executable": false
+    },
+    {
+      "path": "Contents/Resources/TypeMark/index.html",
+      "kind": "file",
+      "sha256": "d4c9b8042ef2e5033371cb40d78780617ff523d3069936afaf8a6b8995d15499",
+      "size": 78245,
+      "executable": false
+    }
+  ],
+  "verified_exact_modules": 181,
+  "selected_modules": [
+    {
+      "id": "10",
+      "bundle": "appsrc/main.js",
+      "bundle_sha256": "8e716a084097a976ab9ed8ea06d8f0b505f14a8dc0c022b3dc1a09a741225e16",
+      "derived_path": "modules/main/004-10.js",
+      "analysis_alias": "Node2Mark",
+      "dependencies": [
+        "11",
+        "12"
+      ],
+      "source_utf16": {
+        "start": 20344,
+        "end": 31169
+      },
+      "source_utf8": {
+        "start": 20356,
+        "end": 31199,
+        "semantics": "half-open"
+      },
+      "bytes": 10843,
+      "sha256": "d3985f53ccd2891404d5bd96ebec795945361d7335cd57b4a4c1352058b3ba1d",
+      "status": "exact-source-slice",
+      "standalone_runtime": "unknown",
+      "input_path": "Typora.app/Contents/Resources/TypeMark/appsrc/main.js",
+      "focus_path": "analysis/typora-1.14.10/rewrite-20261021/core/Node2Mark.js"
+    },
+    {
+      "id": "2a",
+      "bundle": "appsrc/main.js",
+      "bundle_sha256": "8e716a084097a976ab9ed8ea06d8f0b505f14a8dc0c022b3dc1a09a741225e16",
+      "derived_path": "modules/main/015-2a.js",
+      "analysis_alias": "Brush",
+      "dependencies": [
+        "2b",
+        "12",
+        "18",
+        "11",
+        "2c",
+        "1a",
+        "29",
+        "1c"
+      ],
+      "source_utf16": {
+        "start": 113722,
+        "end": 128768
+      },
+      "source_utf8": {
+        "start": 113764,
+        "end": 128812,
+        "semantics": "half-open"
+      },
+      "bytes": 15048,
+      "sha256": "fef21dcf48c13d461d0c0ffd4c3ca7892ecd723976c5b256a264968f1adb933f",
+      "status": "exact-source-slice",
+      "standalone_runtime": "unknown",
+      "input_path": "Typora.app/Contents/Resources/TypeMark/appsrc/main.js",
+      "focus_path": "analysis/typora-1.14.10/rewrite-20261021/core/Brush.js"
+    },
+    {
+      "id": "3c",
+      "bundle": "appsrc/main.js",
+      "bundle_sha256": "8e716a084097a976ab9ed8ea06d8f0b505f14a8dc0c022b3dc1a09a741225e16",
+      "derived_path": "modules/main/025-3c.js",
+      "analysis_alias": "File",
+      "dependencies": [
+        "e",
+        "12",
+        "1a",
+        "11",
+        "2b",
+        "28",
+        "32",
+        "35",
+        "3d",
+        "38",
+        "33",
+        "39",
+        "36",
+        "34",
+        "3e",
+        "3a",
+        "37"
+      ],
+      "source_utf16": {
+        "start": 266706,
+        "end": 293904
+      },
+      "source_utf8": {
+        "start": 266838,
+        "end": 294048,
+        "semantics": "half-open"
+      },
+      "bytes": 27210,
+      "sha256": "51eaf482629c8ba706a6b9db1d3d16a8ab037137d25666d1ff5a24edf0a8410e",
+      "status": "exact-source-slice",
+      "standalone_runtime": "unknown",
+      "input_path": "Typora.app/Contents/Resources/TypeMark/appsrc/main.js",
+      "focus_path": "analysis/typora-1.14.10/rewrite-20261021/core/File.js"
+    },
+    {
+      "id": "45",
+      "bundle": "appsrc/main.js",
+      "bundle_sha256": "8e716a084097a976ab9ed8ea06d8f0b505f14a8dc0c022b3dc1a09a741225e16",
+      "derived_path": "modules/main/033-45.js",
+      "analysis_alias": "Export",
+      "dependencies": [
+        "11",
+        "12",
+        "18",
+        "30",
+        "42",
+        "28",
+        "16",
+        "14",
+        "1b",
+        "32",
+        "29",
+        "e",
+        "43",
+        "44",
+        "2b"
+      ],
+      "source_utf16": {
+        "start": 361894,
+        "end": 393304
+      },
+      "source_utf8": {
+        "start": 362054,
+        "end": 393474,
+        "semantics": "half-open"
+      },
+      "bytes": 31420,
+      "sha256": "fd35dc745b037d53a78cc44a7d9903a1a62c4c9ebadcc472205513f05db2a5a7",
+      "status": "exact-source-slice",
+      "standalone_runtime": "unknown",
+      "input_path": "Typora.app/Contents/Resources/TypeMark/appsrc/main.js",
+      "focus_path": "analysis/typora-1.14.10/rewrite-20261021/core/Export.js"
+    },
+    {
+      "id": "48",
+      "bundle": "appsrc/main.js",
+      "bundle_sha256": "8e716a084097a976ab9ed8ea06d8f0b505f14a8dc0c022b3dc1a09a741225e16",
+      "derived_path": "modules/main/036-48.js",
+      "analysis_alias": "SourceView",
+      "dependencies": [
+        "1f",
+        "46",
+        "47",
+        "e",
+        "11",
+        "12",
+        "18",
+        "1a"
+      ],
+      "source_utf16": {
+        "start": 395218,
+        "end": 409972
+      },
+      "source_utf8": {
+        "start": 395388,
+        "end": 410152,
+        "semantics": "half-open"
+      },
+      "bytes": 14764,
+      "sha256": "3b9100da725fc25701c55467d9e42bfc85aa111aa1da8af108753563e0736a21",
+      "status": "exact-source-slice",
+      "standalone_runtime": "unknown",
+      "input_path": "Typora.app/Contents/Resources/TypeMark/appsrc/main.js",
+      "focus_path": "analysis/typora-1.14.10/rewrite-20261021/core/SourceView.js"
+    },
+    {
+      "id": "1a",
+      "bundle": "appsrc/main.js",
+      "bundle_sha256": "8e716a084097a976ab9ed8ea06d8f0b505f14a8dc0c022b3dc1a09a741225e16",
+      "derived_path": "modules/main/072-1a.js",
+      "analysis_alias": "UndoManager",
+      "dependencies": [
+        "12",
+        "11"
+      ],
+      "source_utf16": {
+        "start": 1209257,
+        "end": 1227948
+      },
+      "source_utf8": {
+        "start": 1214600,
+        "end": 1233291,
+        "semantics": "half-open"
+      },
+      "bytes": 18691,
+      "sha256": "af210a19cec77c26b1946eff28cfa1334d3b6a1ddcd647604e9ee58a2b8f799a",
+      "status": "exact-source-slice",
+      "standalone_runtime": "unknown",
+      "input_path": "Typora.app/Contents/Resources/TypeMark/appsrc/main.js",
+      "focus_path": "analysis/typora-1.14.10/rewrite-20261021/core/UndoManager.js"
+    },
+    {
+      "id": "11",
+      "bundle": "appsrc/main.js",
+      "bundle_sha256": "8e716a084097a976ab9ed8ea06d8f0b505f14a8dc0c022b3dc1a09a741225e16",
+      "derived_path": "modules/main/078-11.js",
+      "analysis_alias": "NodeDef",
+      "dependencies": [
+        "12"
+      ],
+      "source_utf16": {
+        "start": 1296748,
+        "end": 1312373
+      },
+      "source_utf8": {
+        "start": 1302103,
+        "end": 1317728,
+        "semantics": "half-open"
+      },
+      "bytes": 15625,
+      "sha256": "4627234b9869063892133b1f1c9aea190b03977e8a208501df07bc7dede3117e",
+      "status": "exact-source-slice",
+      "standalone_runtime": "unknown",
+      "input_path": "Typora.app/Contents/Resources/TypeMark/appsrc/main.js",
+      "focus_path": "analysis/typora-1.14.10/rewrite-20261021/core/NodeDef.js"
+    },
+    {
+      "id": "5d",
+      "bundle": "appsrc/main.js",
+      "bundle_sha256": "8e716a084097a976ab9ed8ea06d8f0b505f14a8dc0c022b3dc1a09a741225e16",
+      "derived_path": "modules/main/080-5d.js",
+      "analysis_alias": "JSBridge",
+      "dependencies": [
+        "12"
+      ],
+      "source_utf16": {
+        "start": 1327525,
+        "end": 1332770
+      },
+      "source_utf8": {
+        "start": 1332880,
+        "end": 1338125,
+        "semantics": "half-open"
+      },
+      "bytes": 5245,
+      "sha256": "55c4a5d81d576d4b635e3830fca3292a7d640a41c7fdacf13550ebe1dc704069",
+      "status": "exact-source-slice",
+      "standalone_runtime": "unknown",
+      "input_path": "Typora.app/Contents/Resources/TypeMark/appsrc/main.js",
+      "focus_path": "analysis/typora-1.14.10/rewrite-20261021/core/JSBridge.js"
+    },
+    {
+      "id": "61",
+      "bundle": "appsrc/main.js",
+      "bundle_sha256": "8e716a084097a976ab9ed8ea06d8f0b505f14a8dc0c022b3dc1a09a741225e16",
+      "derived_path": "modules/main/086-61.js",
+      "analysis_alias": "Editor",
+      "dependencies": [
+        "2b",
+        "e",
+        "12",
+        "11",
+        "18",
+        "10",
+        "13",
+        "19",
+        "17",
+        "1b",
+        "27",
+        "2a",
+        "25",
+        "31",
+        "28",
+        "16",
+        "59",
+        "2e",
+        "1a",
+        "26",
+        "2f",
+        "29",
+        "34",
+        "3c",
+        "3d",
+        "51",
+        "2c",
+        "3f",
+        "5b",
+        "40",
+        "41",
+        "45",
+        "48",
+        "32",
+        "49",
+        "4a",
+        "4b",
+        "4d",
+        "54",
+        "5e",
+        "60"
+      ],
+      "source_utf16": {
+        "start": 1614577,
+        "end": 1683824
+      },
+      "source_utf8": {
+        "start": 1621242,
+        "end": 1690513,
+        "semantics": "half-open"
+      },
+      "bytes": 69271,
+      "sha256": "a1983d938e101c26a8f2567ea69f7cda43a98175bdc98f1d22a9b949c9ebd4f0",
+      "status": "exact-source-slice",
+      "standalone_runtime": "unknown",
+      "input_path": "Typora.app/Contents/Resources/TypeMark/appsrc/main.js",
+      "focus_path": "analysis/typora-1.14.10/rewrite-20261021/core/Editor.js"
+    }
+  ],
+  "local_full_manifest": "analysis/typora-1.14.10/rewrite-20261021/artifact-manifest.json",
+  "authority": "local shipped artifact; static only"
+}
