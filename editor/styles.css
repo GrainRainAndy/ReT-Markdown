@@ -1,0 +1,269 @@
+:root {
+  color-scheme: light dark;
+  --bg: #fff;
+  --fg: #24292f;
+  --muted: #57606a;
+  --line: #d0d7de;
+  --code: #f6f8fa;
+  --accent: #0969da;
+  font:
+    16px/1.6 -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+:root[data-appearance="dark"] {
+  --bg: #0d1117;
+  --fg: #e6edf3;
+  --muted: #8b949e;
+  --line: #30363d;
+  --code: #161b22;
+  --accent: #58a6ff;
+  color-scheme: dark;
+}
+:root[data-appearance="light"] {
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-appearance="system"] {
+    --bg: #0d1117;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --line: #30363d;
+    --code: #161b22;
+    --accent: #58a6ff;
+  }
+}
+#workspace {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 42px 30px 110px;
+  min-height: calc(100vh - 38px);
+}
+@media (min-width: 1400px) {
+  #workspace {
+    max-width: 1024px;
+  }
+}
+@media (min-width: 1800px) {
+  #workspace {
+    max-width: 1200px;
+  }
+}
+.ProseMirror {
+  outline: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  min-height: 70vh;
+  position: relative;
+}
+.ProseMirror p {
+  margin: 0 0 1em;
+  min-height: 1.6em;
+}
+.ProseMirror h1,
+.ProseMirror h2,
+.ProseMirror h3 {
+  line-height: 1.25;
+  margin: 1.4em 0 0.65em;
+  font-weight: 600;
+}
+.ProseMirror h1,
+.ProseMirror h2 {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.3em;
+}
+.ProseMirror h1 {
+  font-size: 2em;
+}
+.ProseMirror h2 {
+  font-size: 1.5em;
+}
+.ProseMirror h3 {
+  font-size: 1.25em;
+}
+.ProseMirror h1:first-child {
+  margin-top: 0;
+}
+.ProseMirror blockquote {
+  border-left: 4px solid var(--line);
+  padding-left: 1em;
+  margin: 0 0 1em;
+  color: var(--muted);
+}
+.ProseMirror li p {
+  margin: 0;
+}
+.ProseMirror ul,
+.ProseMirror ol {
+  padding-left: 2em;
+  margin-bottom: 1em;
+}
+.ProseMirror li[data-checked="true"]::marker {
+  content: "☑ ";
+}
+.ProseMirror li[data-checked="false"]::marker {
+  content: "☐ ";
+}
+.ProseMirror a {
+  color: var(--accent);
+}
+code,
+.cm-editor {
+  font:
+    13px/1.6 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+.ProseMirror code {
+  background: var(--code);
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+}
+.literal {
+  background: var(--code);
+  border-radius: 6px;
+  margin: 0 0 1em;
+  padding: 8px 14px 14px;
+  white-space: normal;
+}
+.literal-label {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 20px;
+  user-select: none;
+}
+.cm-editor {
+  outline: none !important;
+}
+.cm-content {
+  caret-color: var(--fg);
+  padding: 0 !important;
+}
+.cm-line {
+  padding: 0 !important;
+}
+.cm-scroller {
+  overflow: auto;
+}
+.cm-cursor {
+  border-left-color: var(--fg) !important;
+}
+.cm-selectionBackground {
+  background: #6688cc55 !important;
+}
+.source-surface .cm-editor {
+  min-height: 70vh;
+}
+.source-surface .cm-content {
+  white-space: pre-wrap;
+}
+.ProseMirror-selectednode {
+  outline: 1px solid var(--accent);
+}
+.ProseMirror table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  max-width: 100%;
+  min-width: 50%;
+}
+.ProseMirror td,
+.ProseMirror th {
+  border: 1px solid var(--line);
+  padding: 6px 13px;
+  min-width: 45px;
+}
+.ProseMirror th {
+  font-weight: 600;
+  background: var(--code);
+}
+.inline-math {
+  font-family: serif;
+  background: var(--code);
+}
+footer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--line);
+  padding: 0 16px;
+  background: var(--bg);
+  font-size: 11px;
+  color: var(--muted);
+}
+button {
+  font: inherit;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 5px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+footer button {
+  border: 0;
+}
+#notice {
+  position: sticky;
+  top: 0;
+  background: var(--code);
+  padding: 8px 30px;
+  font-size: 13px;
+  z-index: 5;
+}
+#recovery {
+  position: fixed;
+  inset: 8vh 10vw;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  box-shadow: 0 12px 48px #0004;
+  border-radius: 10px;
+  padding: 24px;
+  overflow: auto;
+  z-index: 20;
+}
+#recovery textarea {
+  display: block;
+  width: 100%;
+  min-height: 35vh;
+  font:
+    13px/1.5 ui-monospace,
+    monospace;
+  background: var(--code);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  margin: 12px 0;
+  padding: 12px;
+}
+#recovery pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+#recovery h2 {
+  margin: 0;
+}
+.image-placeholder {
+  color: var(--muted);
+}
+[hidden] {
+  display: none !important;
+}
