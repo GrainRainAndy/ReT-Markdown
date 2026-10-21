@@ -1,0 +1,28 @@
+{
+  "name": "ret-markdown",
+  "version": "0.2.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "dependencies": {
+    "mdast-util-from-markdown": "2.1.0",
+    "mdast-util-gfm": "3.1.0",
+    "mdast-util-math": "3.0.0",
+    "micromark-extension-gfm": "3.0.0",
+    "micromark-extension-math": "3.1.0",
+    "micromark-util-decode-string": "2.0.1"
+  },
+  "devDependencies": {
+    "@types/mdast": "4.0.4",
+    "@types/node": "26.6.5",
+    "micromark-util-types": "2.0.3",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5"
+  }
+}
