@@ -43,6 +43,9 @@ Native → web：`window.retNative.receive(envelope)`。
 - Web `exportContent` 响应宿主 `prepareExport`：`{html,revision}`；html 是冻结源文的独立安全渲染内容，包含本地 CSS/公式，无编辑DOM；宿主独立打印WebView。
 - Native `appearance`：`{mode:'system'|'light'|'dark'}`；native `error`：`{message,operation}`。
 - 浏览器无 bridge 时具有内存文稿、下载/文件选择开发回退，但不冒称原生保存成功。
+- Web `recoveryDraft`：`{draft:{baseRevision,owner,format:'text'|'prosemirror-json',content,recoverySource?,reason}|null}`，非空草稿须基于当前 received revision；原生持久化真实内容，不解释 PM JSON。null 明确清除已恢复/放弃的草稿；草稿未处理时阻止手动保存/关闭。
+- Native `checkpointAck`：`{revision,stage:'received'|'durable'}`，沿用 checkpoint requestId；仅对应版本恢复记录成功落盘后发送 durable。`load` 可携带 `recoveryDraft`，恢复副本及渲染进程重启均交还草稿。
+- 草稿内容恢复以 `checkpoint.resolvesRecoveryDraft:true` 原子提交新正文并清除草稿；待恢复期间拒绝普通 checkpoint。先清草稿、再发布正文会产生崩溃丢字窗口，因此 null 仅用于明确放弃或无内容变化的恢复。
 
 ---
 

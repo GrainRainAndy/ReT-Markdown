@@ -1,0 +1,10 @@
+{
+  "file": "fidelity.md",
+  "sha256": "e0d56340ded95f870d7103be72e35408e258b723233942a47317be516a390c45",
+  "bytes": 147,
+  "utf8BOM": true,
+  "crlf": 8,
+  "bareLF": 6,
+  "finalNewline": false,
+  "purpose": "No-edit open/switch/save roundtrip must preserve exact bytes; local edits must preserve unrelated ranges."
+}
