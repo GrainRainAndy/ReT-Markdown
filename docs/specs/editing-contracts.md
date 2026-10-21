@@ -1,6 +1,6 @@
 # 编辑行为与状态转换契约
 
-日期：2026-10-21。状态：随[需求分析](requirements.md)评审的新产品契约。表中规则是 ReT 的设计选择；与 Typora 相符的部分通过[证据索引](../research/typora-findings.md)标识，未知行为不以“Typora 默认如此”代替定义。
+日期：2026-10-21。状态：用户已批准按[需求分析](requirements.md)开始实现，以下行为仍须逐项验证。表中规则是 ReT 的设计选择；与 Typora 相符的部分通过[证据索引](../research/typora-findings.md)标识，未知行为不以“Typora 默认如此”代替定义。
 
 ## 1 用例记录格式
 

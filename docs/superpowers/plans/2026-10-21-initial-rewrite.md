@@ -46,6 +46,7 @@ Native → web：`window.retNative.receive(envelope)`。
 - Web `recoveryDraft`：`{draft:{baseRevision,owner,format:'text'|'prosemirror-json',content,recoverySource?,reason}|null}`，非空草稿须基于当前 received revision；原生持久化真实内容，不解释 PM JSON。null 明确清除已恢复/放弃的草稿；草稿未处理时阻止手动保存/关闭。
 - Native `checkpointAck`：`{revision,stage:'received'|'durable'}`，沿用 checkpoint requestId；仅对应版本恢复记录成功落盘后发送 durable。`load` 可携带 `recoveryDraft`，恢复副本及渲染进程重启均交还草稿。
 - 草稿内容恢复以 `checkpoint.resolvesRecoveryDraft:true` 原子提交新正文并清除草稿；待恢复期间拒绝普通 checkpoint。先清草稿、再发布正文会产生崩溃丢字窗口，因此 null 仅用于明确放弃或无内容变化的恢复。
+- Native `load.savedSource` 传递真实已保存正文基线，恢复副本/渲染器重启后不能把收到的 dirty 正文误标为 clean。Web 本地 revision 从 0 开始时，协议版本统一加 `load.revision` 基线。
 
 ---
 
