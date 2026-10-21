@@ -12,3 +12,7 @@
 /.swiftpm/
 .DS_Store
 *.xcuserstate
+/.superpowers/
+/dist/
+/native/.build/
+__pycache__/
