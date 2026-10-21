@@ -1,6 +1,6 @@
 # 从零重写技术方案
 
-日期：2026-10-21。状态：推荐方案，待原型验证和评审。对应[需求分析](../specs/requirements.md)与[编辑行为契约](../specs/editing-contracts.md)。当前分支没有产品实现；本文不把旧项目的修补方案、依赖或测试结果带入新基线。
+日期：2026-10-21。状态：用户已批准开始实现；选型与质量门槛仍须由原型和验收证明。对应[需求分析](../specs/requirements.md)与[编辑行为契约](../specs/editing-contracts.md)。本文不把旧项目的修补方案、依赖或测试结果带入新基线；执行进度见[实施计划](../superpowers/plans/2026-10-21-initial-rewrite.md)。
 
 ## 1 设计结论
 
