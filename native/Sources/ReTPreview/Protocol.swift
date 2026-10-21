@@ -18,7 +18,11 @@ struct BridgeEnvelope {
   func snapshotValid() -> Bool { (payload["source"] as? String).map { $0.utf8.count <= 32 * 1024 * 1024 } == true && integer(payload["revision"]) != nil }
   switch method {
   case "ready", "save", "saveAs", "exportPDF", "open", "new": guard payload.isEmpty else { return nil }
-  case "checkpoint": guard snapshotValid(), let dirty = payload["dirty"] as? NSNumber, CFGetTypeID(dirty) == CFBooleanGetTypeID() else { return nil }
+  case "checkpoint":
+   guard snapshotValid(), let dirty = payload["dirty"] as? NSNumber, CFGetTypeID(dirty) == CFBooleanGetTypeID() else { return nil }
+   if let resolution = payload["resolvesRecoveryDraft"] { guard let flag = resolution as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() else { return nil } }
+  case "recoveryDraft":
+   guard Set(payload.keys) == ["draft"], let draft = payload["draft"], draft is NSNull || RecoveryDraft.parse(draft) != nil else { return nil }
   case "flushResult":
    guard let status = payload["status"] as? String else { return nil }
    if status == "ready" { guard snapshotValid() else { return nil } }

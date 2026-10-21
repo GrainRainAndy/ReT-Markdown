@@ -42,10 +42,11 @@ import WebKit
  func load() {
   guard let document else { return }
   ready = true
-  send("load", payload: ["source":document.state.received.source,"revision":document.state.received.revision,"displayName":document.displayName ?? "Untitled","fileURL":document.fileURL?.absoluteString as Any? ?? NSNull(),"appearance":"system"])
+  send("load", payload: document.loadPayload)
  }
  func command(_ id: String) { if ready { send("command", payload: ["id":id]) } }
  func flush(_ completion: @escaping (Result<Snapshot, Error>) -> Void) {
+  if document?.state.recoveryDraft != nil { completion(.failure(HostFailure.pending("recovery draft"))); return }
   guard ready, !invalidated else { completion(.failure(HostFailure.unavailable("编辑器尚未就绪；已接收的恢复副本仍保留。"))); return }
   let id = UUID().uuidString
   pending[id] = completion
@@ -69,7 +70,8 @@ import WebKit
    guard let callback = pending.removeValue(forKey: envelope.requestID) else { return }
    if envelope.payload["status"] as? String == "pending" { callback(.failure(HostFailure.pending(envelope.payload["reason"] as? String ?? "pending"))); return }
    let snapshot = Snapshot(source: envelope.payload["source"] as! String, revision: BridgeEnvelope.integer(envelope.payload["revision"])!)
-   if snapshot == document.state.received { callback(.success(snapshot)) }
+   if document.state.recoveryDraft != nil { callback(.failure(HostFailure.pending("recovery draft"))) }
+   else if snapshot == document.state.received { callback(.success(snapshot)) }
    else if document.accept(snapshot) { callback(.success(snapshot)) }
    else { callback(.failure(HostFailure.stale)) }
    return
@@ -78,7 +80,13 @@ import WebKit
   if seen.count > 10000 { seen.removeAll(keepingCapacity: true); seen.insert(envelope.requestID) }
   switch envelope.method {
   case "ready": if !ready { load() }
-  case "checkpoint": _ = document.accept(Snapshot(source: envelope.payload["source"] as! String, revision: BridgeEnvelope.integer(envelope.payload["revision"])!))
+  case "checkpoint":
+   if !document.accept(Snapshot(source: envelope.payload["source"] as! String, revision: BridgeEnvelope.integer(envelope.payload["revision"])!), requestID: envelope.requestID, resolvesRecoveryDraft: envelope.payload["resolvesRecoveryDraft"] as? Bool ?? false) {
+    send("error", payload: ["message":"检查点过期或仍有待恢复草稿。","operation":"checkpoint"], requestID: envelope.requestID)
+   }
+  case "recoveryDraft":
+   let draft = envelope.payload["draft"] is NSNull ? nil : RecoveryDraft.parse(envelope.payload["draft"]!)
+   if !document.acceptRecoveryDraft(draft) { send("error", payload: ["message":"恢复草稿基于过期版本。","operation":"recoveryDraft"], requestID: envelope.requestID) }
   case "save": document.save(nil)
   case "saveAs": document.saveAs(nil)
   case "new": NSDocumentController.shared.newDocument(nil)
@@ -105,7 +113,10 @@ import WebKit
   ready = false
   let callbacks = pending.values; pending.removeAll()
   for callback in callbacks { callback(.failure(HostFailure.unavailable("编辑进程已退出；请重新打开恢复副本。"))) }
-  document?.report(HostFailure.unavailable("编辑进程已退出。最后成功落盘的恢复副本已保留，尚未确认的输入可能丢失。"), operation: "renderer", sendToWeb: false)
+  document?.report(HostFailure.unavailable("编辑进程已退出，正在恢复宿主已收到的源文与草稿。尚未发送到宿主的输入可能丢失。"), operation: "renderer", sendToWeb: false)
+  document?.rendererWillRestart()
+  seen.removeAll()
+  webView.reload()
  }
 }
 

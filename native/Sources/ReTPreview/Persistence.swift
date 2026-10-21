@@ -6,17 +6,26 @@ struct Snapshot: Codable, Equatable {
 }
 struct DocumentState {
  let documentID: String
- let epoch: String
+ var epoch: String
  var received: Snapshot
  var durable: Snapshot?
  var saved: Snapshot
+ var recoveryDraft: RecoveryDraft?
+ mutating func receiveDraft(_ draft: RecoveryDraft?) -> Bool {
+  if let draft { guard draft.isValid, draft.baseRevision == received.revision else { return false } }
+  recoveryDraft = draft; return true
+ }
+ mutating func resolveDraft(with snapshot: Snapshot) -> Bool {
+  guard recoveryDraft != nil, snapshot.revision > received.revision else { return false }
+  received = snapshot; recoveryDraft = nil; return true
+ }
  init(documentID: String = UUID().uuidString, epoch: String = UUID().uuidString, source: String = "") {
   self.documentID = documentID; self.epoch = epoch
   received = Snapshot(source: source, revision: 0); saved = received
  }
  var isDirty: Bool { !received.source.utf8.elementsEqual(saved.source.utf8) }
  mutating func receive(_ snapshot: Snapshot, documentID: String, epoch: String) -> Bool {
-  guard documentID == self.documentID, epoch == self.epoch, snapshot.revision > received.revision else { return false }
+  guard recoveryDraft == nil, documentID == self.documentID, epoch == self.epoch, snapshot.revision > received.revision else { return false }
   received = snapshot; return true
  }
  mutating func markDurable(_ snapshot: Snapshot) {

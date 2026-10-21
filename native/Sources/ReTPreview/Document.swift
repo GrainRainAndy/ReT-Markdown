@@ -5,6 +5,7 @@ import AppKit
  var host: EditorHost?
  private let recoveryQueue = DispatchQueue(label: "com.retmarkdown.rewrite.preview.recovery")
  private let recovery = RecoveryStore.applicationStore
+ private lazy var journal = RecoveryJournal(store: recovery, queue: recoveryQueue)
  private var writeSnapshot: Snapshot?
  private var diskBytes: Data?
  private var saveActive = false
@@ -45,38 +46,52 @@ import AppKit
   diskBytes = data
  }
  override func data(ofType typeName: String) throws -> Data { UTF8File.encode((writeSnapshot ?? state.received).source) }
- @discardableResult func accept(_ snapshot: Snapshot) -> Bool {
-  guard !closed, state.receive(snapshot, documentID: state.documentID, epoch: state.epoch) else { return false }
+ @discardableResult func accept(_ snapshot: Snapshot, requestID: String? = nil, resolvesRecoveryDraft: Bool = false) -> Bool {
+  guard !closed else { return false }
+  let accepted = resolvesRecoveryDraft ? state.resolveDraft(with: snapshot) : state.receive(snapshot, documentID: state.documentID, epoch: state.epoch)
+  guard accepted else { return false }
   synchronizeDirty()
-  persistRecovery(snapshot)
+  persistRecovery(snapshot, requestID: requestID)
   return true
  }
+ @discardableResult func acceptRecoveryDraft(_ draft: RecoveryDraft?) -> Bool {
+  guard !closed, state.receiveDraft(draft) else { return false }
+  synchronizeDirty(); persistRecovery(state.received)
+  return true
+ }
+ var loadPayload: [String: Any] {
+  var payload: [String: Any] = ["source":state.received.source,"revision":state.received.revision,"displayName":displayName ?? "Untitled","fileURL":fileURL?.absoluteString as Any? ?? NSNull(),"appearance":"system"]
+  if let draft = state.recoveryDraft { payload["recoveryDraft"] = draft.payload }
+  return payload
+ }
+ func rendererWillRestart() { state.epoch = UUID().uuidString }
  private func synchronizeDirty() {
   updateChangeCount(.changeCleared)
-  if state.isDirty { updateChangeCount(.changeDone) }
+  if state.isDirty || state.recoveryDraft != nil { updateChangeCount(.changeDone) }
  }
- private func persistRecovery(_ snapshot: Snapshot) {
-  let id = state.documentID, epoch = state.epoch
-  let record = RecoveryRecord(documentID: id, fileURL: fileURL, snapshot: snapshot, date: Date())
-  let store = recovery
-  recoveryQueue.async { [weak self] in
-   do {
-    try store.write(record)
-    DispatchQueue.main.async {
-     guard let self, !self.closed, self.state.epoch == epoch else { return }
-     self.state.markDurable(snapshot)
-    }
-   } catch {
-    DispatchQueue.main.async { self?.report(error, operation: "recovery") }
-   }
+ private func persistRecovery(_ snapshot: Snapshot, requestID: String? = nil, onDurable: (() -> Void)? = nil) {
+  let epoch = state.epoch
+  let record = RecoveryRecord(documentID: state.documentID, fileURL: fileURL, snapshot: snapshot, date: Date(), recoveryDraft: state.recoveryDraft)
+  journal.write(record, acknowledge: { [weak self] stage in
+   guard let self, !self.closed, self.state.epoch == epoch else { return }
+   if stage == .durable { self.state.markDurable(snapshot); onDurable?() }
+   if let requestID { self.host?.send("checkpointAck", payload: ["revision":snapshot.revision,"stage":stage.rawValue], requestID: requestID) }
+  }) { [weak self] result in
+   guard let self, !self.closed, self.state.epoch == epoch else { return }
+   if case .failure(let error) = result { self.report(error, operation: "recovery") }
   }
  }
  func restore(_ record: RecoveryRecord) {
   // Recovery always opens as an untitled copy, preserving the external file unconditionally.
   state = DocumentState(source: "")
-  _ = state.receive(Snapshot(source: record.snapshot.source, revision: max(1, record.snapshot.revision)), documentID: state.documentID, epoch: state.epoch)
+  state.received = record.snapshot
+  _ = state.receiveDraft(record.recoveryDraft)
   displayName = "恢复副本 — \(record.fileURL?.lastPathComponent ?? "未命名")"
-  synchronizeDirty(); persistRecovery(state.received)
+  synchronizeDirty()
+  persistRecovery(state.received) { [recoveryQueue, recovery] in
+   // Retire the old record only after the recovered copy exists on disk.
+   recoveryQueue.async { recovery.remove(documentID: record.documentID) }
+  }
  }
  override func save(to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType, completionHandler: @escaping (Error?) -> Void) {
   guard !closed, !closeActive || closeSaveCompletion != nil else { completionHandler(CocoaError(.userCancelled)); return }
@@ -91,6 +106,7 @@ import AppKit
    completionHandler(error)
    if !self.saveQueue.isEmpty { self.saveQueue.removeFirst()() }
   }
+  if !isAutomatic, state.recoveryDraft != nil { finish(HostFailure.pending("recovery draft")); return }
   let write: (Snapshot) -> Void = { [weak self] snapshot in
    guard let self, !self.closed else { finish(CocoaError(.userCancelled)); return }
    let commit: (Result<Void, Error>) -> Void = { [weak self] result in
@@ -175,7 +191,7 @@ import AppKit
  }
  @objc private func closeSaved(_ document: NSDocument, didSave: Bool, contextInfo: UnsafeMutableRawPointer?) {
   let callback = closeSaveCompletion; closeSaveCompletion = nil
-  callback?(didSave && !state.isDirty)
+  callback?(didSave && !state.isDirty && state.recoveryDraft == nil)
  }
  override func close() {
   closed = true; host?.invalidate(); host = nil
@@ -228,9 +244,9 @@ import AppKit
   }
  }
  private func preserveBeforeReload(_ continuation: @escaping () -> Void) {
-  guard state.isDirty else { continuation(); return }
+  guard state.isDirty || state.recoveryDraft != nil else { continuation(); return }
   // A separate record survives subsequent checkpoints and preserves the pre-revert source.
-  let record = RecoveryRecord(documentID: UUID().uuidString, fileURL: fileURL, snapshot: state.received, date: Date())
+  let record = RecoveryRecord(documentID: UUID().uuidString, fileURL: fileURL, snapshot: state.received, date: Date(), recoveryDraft: state.recoveryDraft)
   let store = recovery
   recoveryQueue.async { [weak self] in
    do {

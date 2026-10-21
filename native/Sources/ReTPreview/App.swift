@@ -24,7 +24,7 @@ import AppKit
   let records = RecoveryStore.applicationStore.records()
   for record in records {
    // Clean on-disk snapshots are not offered as crash recovery.
-   if let url = record.fileURL, let data = try? Data(contentsOf: url), data == UTF8File.encode(record.snapshot.source) { continue }
+   if record.recoveryDraft == nil, let url = record.fileURL, let data = try? Data(contentsOf: url), data == UTF8File.encode(record.snapshot.source) { continue }
    let alert = NSAlert()
    alert.messageText = "发现可恢复文稿"
    alert.informativeText = "\(record.fileURL?.lastPathComponent ?? "未命名文稿") · 版本 \(record.snapshot.revision) · \(record.date.formatted())\n这是最后成功写入恢复存储的版本。原文件不会被覆盖。"
@@ -33,7 +33,6 @@ import AppKit
    if result == .alertFirstButtonReturn {
     let document = MarkdownDocument(); document.restore(record)
     controller.addDocument(document); document.makeWindowControllers(); document.showWindows()
-    RecoveryStore.applicationStore.remove(documentID: record.documentID)
    } else if result == .alertThirdButtonReturn { RecoveryStore.applicationStore.remove(documentID: record.documentID) }
   }
   if controller.documents.isEmpty { controller.newDocument(nil) }
