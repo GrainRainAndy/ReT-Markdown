@@ -189,6 +189,20 @@ print("第 080 行", 80 ** 2)
 
 ![远程图占位](https://example.invalid/preview.png)
 
+## 宽内容与打印换行
+
+下列公式、长链接和代码行用于检查内容宽度，不能只通过截断右侧来适配页面。
+
+$$
+x_1 + x_2 + x_3 + x_4 + x_5 + x_6 + x_7 + x_8 + x_9 + x_{10} + x_{11} + x_{12} + x_{13} + x_{14} + x_{15} + x_{16} = S_{16}
+$$
+
+<https://example.invalid/print-width/abcdefghijklmnopqrstuvwxyz0123456789/abcdefghijklmnopqrstuvwxyz0123456789/abcdefghijklmnopqrstuvwxyz0123456789/URL-WIDTH-END>
+
+```text
+CODE-WIDTH-START 中文长行 0123456789 abcdefghijklmnopqrstuvwxyz 0123456789 abcdefghijklmnopqrstuvwxyz 0123456789 abcdefghijklmnopqrstuvwxyz 0123456789 abcdefghijklmnopqrstuvwxyz CODE-WIDTH-END
+```
+
 ## 最后一页
 
 结束标记：ReT-PDF-END。
