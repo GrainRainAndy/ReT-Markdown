@@ -176,17 +176,22 @@ Undo 也产生新 revision；dirty 依据内容与资产状态是否等于已保
 
 ## 6 原生宿主协议
 
-所有请求携带 `protocolVersion / documentId / epoch / requestId / baseRevision / method / payload`，响应携带对应 ID、结果版本和结构化错误。仅可信应用主 frame 可以调用注册方法；载荷 schema、长度、路径授权和生命周期都要验证。
+初版实际封套为 `{v:1, documentId, epoch, requestId, method, payload}`，内容版本位于具体载荷的 `revision` 或 `baseRevision`。Web 通过 `window.webkit.messageHandlers.ret.postMessage` 请求，宿主通过 `window.retNative.receive` 响应。仅可信应用主 frame 可以调用注册方法；载荷 schema、长度、路径授权和生命周期都要验证。首次 `ready` 允许空身份，宿主 `load` 分配会话；之后请求必须匹配文稿与 epoch。
 
 | 能力 | 载荷/结果 | 约束 |
 | --- | --- | --- |
-| `session.ready` | 协议版本、能力集、新 epoch | 不兼容时停止编辑并显示错误，不猜字段 |
-| `document.checkpoint` | revision、内容、编码、资源清单、hash | 宿主核验并返回 received ACK；恢复记录落盘后另返回 durable ACK；旧 revision 不覆盖新 checkpoint |
-| `document.flush` | 目标屏障 ID | 返回最后已提交快照或明确的 composition pending / recovery-draft pending / 失败 |
-| `document.saved` | 保存成功的 hash、revision、资源版本 | 只有磁盘成功后通知；不能直接把当前会话标为 clean |
-| `asset.import` | 文件/剪贴板授权 token、operationId | 宿主分配目标路径，返回 asset ID 和安全引用 |
-| `export.start` | snapshotId、输出授权、样式版本 | 创建独立作业，状态与取消关联 jobId |
-| `command.execute` | 已注册 commandId、参数 | 交给当前 owner，与网页直接命令共用事务入口 |
+| `ready` / `load` | source、savedSource、revision、displayName、fileURL、appearance、可选 recoveryDraft、assetToken | 源文保留 BOM/EOL；savedSource 是真实保存基线；本地 revision 加 load.revision 后用于桥接 |
+| `checkpoint` / `checkpointAck` | source、revision、dirty；ACK stage 为 received 或 durable | 宿主先接收，恢复记录落盘后另确认 durable；旧 revision 不覆盖新 checkpoint |
+| `recoveryDraft` | draft 的真实内容、baseRevision、owner、format、可选 recoverySource，或 null | 有草稿时阻止普通保存；变更恢复通过 checkpoint.resolvesRecoveryDraft 原子提交；null 只用于明确放弃或无内容变化的恢复 |
+| `flush` / `flushResult` | 同一 requestId；ready 携带 source/revision，pending 携带 reason | 组合输入或待恢复草稿不能冒称已提交；宿主屏障超时不构成保存成功 |
+| `saved` | 已成功保存的 source、revision | 只确认相同源文基线；N 保存成功不能清除 N+1 的 dirty |
+| `collectAssets` / `assetManifest` | 固定 source/revision → paths/revision，沿用 requestId | 清单由相同 Markdown 解析器产生；最多 10000 项、每项 8192 UTF-8 字节；路径清单不授予文件系统访问权限 |
+| `importImage` / `assetResult` | 空载荷为选择器，source:'clipboard' 为图片剪贴板，或 dataURL/fileName；返回 relativePath 或 error | 先安装完整资源再返回；响应封套 ID 必须匹配，载荷中的可选 requestId 也须一致；由 web 用保存的选区创建一次根事务 |
+| `prepareExport` / `exportContent` | 固定 source/revision → html/revision，沿用 requestId | 原生先冻结资源字节，再异步渲染；替代或失效作业不能提交旧结果；实际渲染失败元素使原生导出失败并保留旧文件 |
+| `command` | 已注册 id、参数 | 交给当前 owner，与网页直接命令共用事务入口 |
+| `appearance` / `error` | mode；或 message/operation | 外观不修改源文；错误不会伪装成 saved |
+
+`assetToken` 是原生资源存储分配的能力标识；图片 URL 为 `ret-asset://<assetToken>/<按组件转义的相对路径>`。本地实时解析仍验证原生授权根与符号链接，打印解析只读取该作业冻结的图片字典。百分号转义仅在 Markdown/URL 边界解码一次，归一化后的文件名中的字面 `%20` 不再解释为空格。
 
 请求状态为 pending/completed/cancelled/failed，终态只进入一次。关闭/重载使 epoch 失效；迟到、重复响应不得更新新会话。设有上限的超时可报告失败，但超时不等于证明操作没有发生；保存/资产操作以 operationId 幂等查询结果。
 
