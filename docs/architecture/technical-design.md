@@ -184,11 +184,14 @@ Undo 也产生新 revision；dirty 依据内容与资产状态是否等于已保
 | `checkpoint` / `checkpointAck` | source、revision、dirty；ACK stage 为 received 或 durable | 宿主先接收，恢复记录落盘后另确认 durable；旧 revision 不覆盖新 checkpoint |
 | `recoveryDraft` | draft 的真实内容、baseRevision、owner、format、可选 recoverySource，或 null | 有草稿时阻止普通保存；变更恢复通过 checkpoint.resolvesRecoveryDraft 原子提交；null 只用于明确放弃或无内容变化的恢复 |
 | `flush` / `flushResult` | 同一 requestId；ready 携带 source/revision，pending 携带 reason | 组合输入或待恢复草稿不能冒称已提交；宿主屏障超时不构成保存成功 |
+| `reloadPrepare` / `reloadReady` | 候选 epoch/load；旧身份下返回 ready 的 source/revision 或 pending | 编辑器同步持有输入屏障后才确认；当前组合输入或 RecoveryDraft 阻止准备 |
+| `reloadCommit` / `reloadComplete` / `reloadCancel` | 同一事务 requestId；提交使用候选 epoch，取消使用旧身份 | 候选载荷在准备时冻结；持久化旧内容与资源后才提交；重复提交只重发确认，取消后迟到准备无效 |
 | `saved` | 已成功保存的 source、revision | 只确认相同源文基线；N 保存成功不能清除 N+1 的 dirty |
 | `collectAssets` / `assetManifest` | 固定 source/revision → paths/revision，沿用 requestId | 清单由相同 Markdown 解析器产生；最多 10000 项、每项 8192 UTF-8 字节；路径清单不授予文件系统访问权限 |
 | `importImage` / `assetResult` | 空载荷为选择器，source:'clipboard' 为图片剪贴板，或 dataURL/fileName；返回 relativePath 或 error | 先安装完整资源再返回；响应封套 ID 必须匹配，载荷中的可选 requestId 也须一致；由 web 用保存的选区创建一次根事务 |
 | `prepareExport` / `exportContent` | 固定 source/revision → html/revision，沿用 requestId | 原生先冻结资源字节，再异步渲染；替代或失效作业不能提交旧结果；实际渲染失败元素使原生导出失败并保留旧文件 |
-| `command` | 已注册 id、参数 | 交给当前 owner，与网页直接命令共用事务入口 |
+| `command` / `commandState` | 已注册 id；enabled 为命令 id 到布尔值的映射 | 原生菜单和网页快捷键读取 `editor/protocol/commands.json`；按 owner、历史、活动事务及缩放状态验证可用性 |
+| `openLink` | url | 仅允许 http/https/mailto，由宿主交系统应用；编辑 WebView 不导航 |
 | `appearance` / `error` | mode；或 message/operation | 外观不修改源文；错误不会伪装成 saved |
 
 `assetToken` 是原生资源存储分配的能力标识；图片 URL 为 `ret-asset://<assetToken>/<按组件转义的相对路径>`。本地实时解析仍验证原生授权根与符号链接，打印解析只读取该作业冻结的图片字典。百分号转义仅在 Markdown/URL 边界解码一次，归一化后的文件名中的字面 `%20` 不再解释为空格。
@@ -233,7 +236,9 @@ AppKit NSDocument 负责系统文稿生命周期。其自动保存能力声明�
 
 每次收到 checkpoint 可合并排队持久化，目标空闲后 1 s 内落盘；该目标是调度上限而非掉电保证。手动恢复屏障需等待 durable ACK，失败明确可见。WebContent 退出可使用宿主 receivedCheckpoint；整个应用崩溃或系统重启只能恢复 durable 记录。未持久化输入的风险必须按此边界表达。进程退出回调只提供触发点。[Apple WebContent termination](https://developer.apple.com/documentation/webkit/wknavigationdelegate/webviewwebcontentprocessdidterminate(_:))
 
-版本恢复先处理当前输入和未保存更改，冻结当前内容/资源的恢复记录，再读取选定系统版本；验证引用资源是否仍存在，缺失时给出占位与清单。用户接受后以新 epoch 加载版本、重建视图并清空针对旧内容的编辑历史；旧内容通过保留的恢复记录回退，不把旧逆补丁混用到新版本。
+目标设计中，版本恢复先处理当前输入和未保存更改，冻结当前内容/资源的恢复记录，再读取选定系统版本；验证引用资源是否仍存在，缺失时给出占位与清单。用户接受后以新 epoch 加载版本、重建视图并清空针对旧内容的编辑历史；旧内容通过保留的恢复记录回退，不把旧逆补丁混用到新版本。
+
+初版实现的已存文件恢复与外部重载使用 `reloadPrepare → reloadReady → reloadCommit → reloadComplete`。准备应答前同步暂停新输入，旧身份保留到保护性恢复记录及其独立资源 journal 成功写入。准备超时或取消释放旧会话；提交后重复投递直到匹配完成，不能因确认丢失而退回旧身份。系统历史版本同步回调在此 alpha 明确拒绝，不改变当前源文、文件路径或身份；历史版本导入仍需后续专门实现，已存文件恢复不是它的等价替代。
 
 外部更改到达时在当前输入完成后比较：只有内容 clean、无 RecoveryDraft、无待持久化引用资源时可自动加载；否则保留本地和外部候选并显示冲突选项。仅读取外部候选不失效本地 epoch；用户接受并完成切换时才失效旧 epoch、保存恢复快照。选择期间外部再次变化须重新验证版本；取消保持原会话。外部重命名更新经确认的文件身份和资源基准；删除则保留内存内容并进入另存路径，不重建已删除文件而无提示。
 
