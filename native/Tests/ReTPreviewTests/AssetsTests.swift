@@ -145,6 +145,36 @@ final class AssetsTests: RecoveryIsolatedTestCase {
   XCTAssertThrowsError(try assets.resolve(url:URL(string:"ret-asset://document/" + encoded)!,documentURL:nil))
   XCTAssertThrowsError(try assets.resolve(url:URL(string:"ret-asset://" + assets.token + "/" + encoded + "?root=/etc")!,documentURL:nil))
  }
+ func testPercentLookingImportedNamesDecodeOnlyAtReferenceBoundary() throws {
+  for name in ["literal%20.svg","literal%2F.svg","literal%2e%2e.svg"] {
+   let directory = environment.root.appendingPathComponent(UUID().uuidString)
+   let assets = try AssetStore(directory:directory,documentID:"percent")
+   let raw = try assets.importImage(svg,fileName:name,operationID:name,documentURL:nil)
+   let safe = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn:"%#?"))
+   let reference = try XCTUnwrap(raw.addingPercentEncoding(withAllowedCharacters:safe))
+   let live = try XCTUnwrap(URL(string:"ret-asset://" + assets.token + "/" + reference))
+   XCTAssertEqual(try assets.resolve(url:live,documentURL:nil).data,svg)
+   XCTAssertEqual(try assets.freeze(references:[reference],documentURL:nil)[raw]?.data,svg,"frozen lookup changed literal percent bytes")
+   let first = directory.appendingPathComponent("first/doc.md")
+   try FileManager.default.createDirectory(at:first.deletingLastPathComponent(),withIntermediateDirectories:true)
+   let snapshot = Snapshot(source:"![image](\(reference))",revision:1)
+   let prepared = try assets.prepareSave(to:first,snapshot:snapshot,references:[reference],documentURL:nil)
+   try assets.commit(prepared)
+   XCTAssertEqual(try Data(contentsOf:first.deletingLastPathComponent().appendingPathComponent(raw)),svg)
+   if name == "literal%20.svg" {
+    let impostor = raw.replacingOccurrences(of:"%20",with:" ")
+    let other = Data("<svg xmlns='http://www.w3.org/2000/svg'><circle r='9' fill='blue'/></svg>".utf8)
+    try other.write(to:first.deletingLastPathComponent().appendingPathComponent(impostor))
+    XCTAssertEqual(try assets.freeze(references:[reference],documentURL:first)[raw]?.data,svg,"literal percent selected similarly named space file")
+   }
+   let second = directory.appendingPathComponent("second/copy.md")
+   try FileManager.default.createDirectory(at:second.deletingLastPathComponent(),withIntermediateDirectories:true)
+   let migrated = try assets.prepareSave(to:second,snapshot:snapshot,references:[reference],documentURL:first)
+   try assets.commit(migrated)
+   XCTAssertEqual(try Data(contentsOf:second.deletingLastPathComponent().appendingPathComponent(raw)),svg)
+   XCTAssertEqual(try assets.resolve(url:live,documentURL:second).data,svg)
+  }
+ }
  func testFrozenImageBytesSurviveExternalChange() throws {
   let assets = try store()
   let doc = environment.root.appendingPathComponent("doc.md")

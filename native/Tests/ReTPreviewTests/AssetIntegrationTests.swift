@@ -48,6 +48,59 @@ final class AssetIntegrationTests: RecoveryIsolatedTestCase {
   XCTAssertTrue(bytes.contains("![图片]("))
   await MainActor.run { XCTAssertFalse(document.state.isDirty); XCTAssertEqual(document.fileURL,target); environment.close(document) }
  }
+ @MainActor private func flush(_ document: MarkdownDocument) async throws -> Snapshot {
+  try await withCheckedThrowingContinuation { continuation in document.host!.flush { continuation.resume(with:$0) } }
+ }
+ @MainActor private func manifest(_ document: MarkdownDocument, snapshot: Snapshot) async throws -> [String] {
+  try await withCheckedThrowingContinuation { continuation in document.host!.collectAssets(for:snapshot) { continuation.resume(with:$0) } }
+ }
+ @MainActor private func evaluate(_ document: MarkdownDocument, _ code: String, arguments: [String:Any] = [:]) async throws -> Any? {
+  try await withCheckedThrowingContinuation { continuation in document.host!.webView.callAsyncJavaScript(code,arguments:arguments,in:nil,in:.page) { continuation.resume(with:$0) } }
+ }
+ @MainActor private func save(_ document: MarkdownDocument, to target: URL) async throws {
+  try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void,Error>) in
+   document.save(to:target,ofType:"net.daringfireball.markdown",for:.saveAsOperation) { error in
+    if let error { continuation.resume(throwing:error) } else { continuation.resume() }
+   }
+  }
+ }
+ func testImportedLiteralPercentNameSurvivesLiveFreezeFirstSaveAndSaveAs() async throws {
+  let document = try await attach("start\n")
+  do {
+   let svg = Data("<svg xmlns='http://www.w3.org/2000/svg' width='80' height='40'><rect width='80' height='40' fill='red'/></svg>".utf8)
+   _ = try await evaluate(document,"const dt=new DataTransfer();dt.items.add(new File([Uint8Array.from(atob(data),c=>c.charCodeAt(0))],'literal%20.svg',{type:'image/svg+xml'}));document.querySelector('.ProseMirror').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:dt}));",arguments:["data":svg.base64EncodedString()])
+   try await Task.sleep(nanoseconds:300_000_000)
+   let snapshot = try await flush(document)
+   XCTAssertTrue(snapshot.source.contains("literal%2520-"))
+   let paths = try await manifest(document,snapshot:snapshot)
+   XCTAssertEqual(paths.count,1)
+   let reference = try XCTUnwrap(paths.first)
+   let raw = try AssetStore.relative(reference)
+   let width = try await evaluate(document,"return document.querySelector('.image-object img')?.naturalWidth ?? 0") as? Int
+   XCTAssertEqual(width,80,"actual live capability image failed to load")
+   try await MainActor.run {
+    XCTAssertEqual(try document.assets().freeze(references:paths,documentURL:nil)[raw]?.data,svg)
+   }
+   let first = environment.root.appendingPathComponent("first/doc.md")
+   try FileManager.default.createDirectory(at:first.deletingLastPathComponent(),withIntermediateDirectories:true)
+   try await save(document,to:first)
+   XCTAssertEqual(try String(contentsOf:first,encoding:.utf8),snapshot.source)
+   XCTAssertEqual(try Data(contentsOf:first.deletingLastPathComponent().appendingPathComponent(raw)),svg)
+   let spacePath = first.deletingLastPathComponent().appendingPathComponent(raw.replacingOccurrences(of:"%20",with:" "))
+   try Data("<svg xmlns='http://www.w3.org/2000/svg'><circle r='9' fill='blue'/></svg>".utf8).write(to:spacePath)
+   try await MainActor.run { XCTAssertEqual(try document.assets().freeze(references:paths,documentURL:first)[raw]?.data,svg) }
+   let second = environment.root.appendingPathComponent("second/copy.md")
+   try FileManager.default.createDirectory(at:second.deletingLastPathComponent(),withIntermediateDirectories:true)
+   try await save(document,to:second)
+   XCTAssertEqual(try String(contentsOf:second,encoding:.utf8),snapshot.source)
+   XCTAssertEqual(try Data(contentsOf:second.deletingLastPathComponent().appendingPathComponent(raw)),svg)
+   try await MainActor.run {
+    XCTAssertEqual(document.fileURL,second); XCTAssertFalse(document.state.isDirty)
+    XCTAssertEqual(try document.assets().freeze(references:paths,documentURL:second)[raw]?.data,svg)
+   }
+  } catch { await MainActor.run { environment.close(document) }; throw error }
+  await MainActor.run { environment.close(document) }
+ }
  func testSaveAsNThenNPlusOnePreservesDirtyAndInstallsLaterAssetOnNextSave() async throws {
   let document = try await MainActor.run { () throws -> MarkdownDocument in
    let document = environment.makeDocument()

@@ -134,3 +134,72 @@ Final runtime source SHA256 **33b3173137ddd7950ca914d3f6e43f49c8c19793f78b0bf691
 - Info.plist SHA256: `aa72f318b1478561d0d3d6a0d0d986fed88a116823b81e72899f0e81841e455a`.
 
 `codesign --verify --deep --strict` and `git diff --check` were rerun successfully after final generation. Runtime files, controller scratch/docs/fixtures and old preview output outside this isolated version were not changed by the last characterization.
+
+
+## Review fix round 1 — FIX_BASE dc49273 (2026-10-23)
+
+Both Important findings in `task-4-review.md` were reproduced before changing their corresponding production code, then fixed. This round changes only native Assets/Export and their regression tests, plus this report. Controller Task 2 scratch/plan edits are preserved and excluded from the fix commit. No web source, renderer layout, dependency, fixture, or build-script change was needed.
+
+### Asset reference decoding
+
+`resolve(path:)` remains the Markdown/URL boundary that decodes once. New private `resolveNormalizedPath` validates an already decoded filesystem name with `decode:false`. Frozen manifest lookups, unmanaged destination comparisons, and managed save-copy preparation call that normalized lookup, so a literal `%HH` filename cannot be decoded into a different name during migration or freezing.
+
+New unit regression imports real validated SVG bytes named `literal%20.svg`, `literal%2F.svg`, and `literal%2e%2e.svg`; each goes through its encoded capability URL, freeze, first-save preparation/commit, and SaveAs preparation/commit. The `%20` case installs a different similarly named space file and verifies it cannot replace the requested frozen bytes. A separate native WK integration regression pastes a real `File` named `literal%20.svg` through the editor's ClipboardEvent/DataTransfer path, observes the loaded live image (`naturalWidth=80`), collects the production parser manifest, freezes bytes, saves through actual NSDocument first save and SaveAs, and verifies unchanged encoded Markdown, original copied bytes, correct fileURL, and clean saved state. This is actual production service/DOM integration, not observed system clipboard UI.
+
+RED command (before asset fix):
+
+```sh
+swift test --package-path native --filter AssetsTests/testPercentLooking > /private/tmp/ret-task4-fix1-percent-red.log 2>&1
+```
+
+Exit 1, 1 test / 2 failures: frozen image was `nil` instead of `Optional(110 bytes)`; preparation threw `找不到图片：percent.assets/literal -…svg`, showing `%20` became a space. The thrown first iteration prevented later boundary cases from running in RED; all three run in GREEN.
+
+GREEN same command with `/private/tmp/ret-task4-fix1-percent-green.log`: exit 0, **1/1**, 0.013 seconds. The actual WK/NSDocument regression is included in the focused integration and full results below.
+
+### Superseded native print requests
+
+Each request now owns its ID, snapshot, frozen resources, target, print job, progress panel, and completion. The controller installs the replacement as active and cancels the old request independently. An old printing request keeps its own completion until native printing unwinds, without blocking the replacement's render admission or timeout. Its completion clears only its own resources/panel; it clears controller active state only if it is still that exact request. Completions run once. Cancel buttons carry request identity so a stale panel action cannot cancel a newer request. Cancellation's disk-commit coordinator remains unchanged, including the honest completed result if replacement has already committed.
+
+The regression uses real WK/NSPrintOperation printing, not an injected fake job. After the first export creates its native print WebView/window, the test starts the second export in the same MainActor turn. Both target files initially contain sentinel bytes. It requires first completion to report cancellation, first target bytes to remain unchanged, second completion to succeed with searchable `REPLACEMENT-PRINT-MARKER`, and sibling temporary PDF files/progress windows to be cleaned. While the second target is still pending, the first completion also verifies the replacement's single progress panel remains. This tests the previously stuck controller ownership path and old-cleanup isolation.
+
+RED command (asset fix already present, export controller still old):
+
+```sh
+swift test --package-path native --filter ExportTests/testSecondExport > /private/tmp/ret-task4-fix1-supersede-red.log 2>&1
+```
+
+Exit 1, **1 test / 2 failures**, 16.600 seconds: both completion expectations unfulfilled after 15 seconds; second target remained the sentinel and could not unwrap as PDFDocument. The overlap assertion passed. The CoreGraphics diagnostic when trying to parse those deliberately unchanged sentinel bytes is a consequence of the expected RED, not a separate print crash.
+
+Focused GREEN after the two fixes:
+
+```sh
+swift test --package-path native --filter 'ExportTests/testSecondExport|AssetIntegrationTests/testImportedLiteralPercent' > /private/tmp/ret-task4-fix1-integration-green.log 2>&1
+```
+
+Exit 0, **2/2**, 3.066 seconds (asset integration 1.470 s, export replacement 1.596 s). The additional old-completion/progress assertion was then added and passed in the final full suite.
+
+### Final affected verification
+
+```sh
+bash scripts/build-app.sh > /private/tmp/ret-task4-fix1-build.log 2>&1
+RET_PDF_VERIFICATION_DIR="$PWD/build/rewrite/verification/2026-10-23/task4/fix-round1" swift test --package-path native > /private/tmp/ret-task4-fix1-native-full.log 2>&1
+codesign --verify --deep --strict 'build/rewrite/0.2.0-alpha.1/ReT Markdown Preview.app'
+git diff --check
+```
+
+All final commands exit 0. Release app build/plist lint/signing succeeded. Native suite is **50/50 = 47 prior + 3 new tests**, 12.986 seconds, no warnings/errors; actual bundled file WK KaTeX remains GREEN. The new export regression passes in 1.561 s. The initial build attempt inside the filesystem sandbox failed only because Swift could not write its toolchain module cache; the authorized escalated rerun is the successful final build log, not a behavioral RED.
+
+Web unit **115/115** and browser **65/65** are the prior verified results, **not rerun in this native-only fix**. Rebuilt bundle main.js, render-worker.js, katex.css, notices, lock and plist hashes exactly match the previously verified runtime bytes. No claim is made that unchanged web tests newly ran this round.
+
+All native regressions retain test-only recovery/asset roots and owned temporary output; production recovery/assets and general clipboard were not used. Native GUI/IME observation remains unavailable, and previous table continuation polish limitations remain unchanged. No new unresolved implementation defect is known from this fix round.
+
+### Refreshed production output and identity
+
+Actual production outputs from the final 50-test run are under `build/rewrite/verification/2026-10-23/task4/fix-round1/`:
+
+- `print-layout.pdf`: **7 nonblank A4 pages**, SHA256 `05186f1eca122fa70d845cbb24da17e201e0dc714d455bbcbc7a2ad0dc86e0d7`.
+- `tall-image.pdf`: **3 A4 pages**, SHA256 `b2f2b3e99a30cb95a17a4bb0118f34263d6d50504d15c6b89be364a7bbe8b864`; six bands remain `[9600,9600,9600,9600,9600,9720]`.
+
+Poppler rendered every ordinary page at 80 dpi and every tall page at 70 dpi. **All 7 ordinary and all 3 tall PNGs are byte-identical** to the previously inspected `final-pages/page-*.png` and measured `tall-pages/final-*.png`, respectively. No speculative layout change was introduced. `print-layout-comparison.json` / `tall-image-comparison.json` preserve per-page hashes/equality. Fresh `pdftotext -layout` verifies exact `中文可检索`, all 80 row markers, all 80 Chinese code lines, start/end/URL/code width markers and absence of N+1; `text-checks.json` records every check true. Source fixture remains SHA256 `74fb49d08fc6b6a43cbf85e81b864873f64d329b9d31bff74d81a77dc5ed4cd8`.
+
+`fix-round1/build-identity.json` records explicit source paths/digest algorithm and all bundle/PDF hashes. Preview path/version/bundle ID/OS remain as above. Updated runtime source SHA256 is **`284e99c2a69ccac586fcdce09ce1604323f6ec52f316510b1d7211e378e02c32`**, computed as SHA256 over sorted relative path + NUL + bytes + NUL for native/Sources, editor TS/CSS/HTML, the two build scripts, and package-lock.json. The rebuilt executable SHA256 is **`a62df988cbf5ba54bea2f53891c2d8f00e63466701eb01d0ae180f24eeb9788a`**. Native source changes are exactly the two review fixes; renderer bytes and printed page images remain unchanged.

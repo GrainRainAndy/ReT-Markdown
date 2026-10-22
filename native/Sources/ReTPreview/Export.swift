@@ -216,15 +216,29 @@ struct PDFResources {
 }
 
 @MainActor final class PDFExportController: NSObject {
+ /// Each request owns its completion/progress through native print unwind, even
+ /// after a newer request becomes active. Old cleanup cannot mutate new state.
+ @MainActor private final class Request {
+  let id = UUID().uuidString
+  let target: URL
+  var snapshot: Snapshot?
+  var resources: PDFResources?
+  var printJob: PDFPrintJob?
+  var progress: NSPanel?
+  private var completion: ((Result<[String],Error>) -> Void)?
+  init(target: URL, completion: @escaping (Result<[String],Error>) -> Void) { self.target = target; self.completion = completion }
+  func closeProgress() {
+   if let progress { progress.parent?.removeChildWindow(progress); progress.close(); self.progress = nil }
+  }
+  func finish(_ result: Result<[String],Error>) {
+   guard let callback = completion else { return }
+   completion = nil; snapshot = nil; resources = nil; printJob = nil
+   closeProgress(); callback(result)
+  }
+ }
  weak var document: MarkdownDocument?
  weak var host: EditorHost?
- private var requestID: String?
- private var snapshot: Snapshot?
- private var resources: PDFResources?
- private var target: URL?
- private var printJob: PDFPrintJob?
- private var progress: NSPanel?
- private var completed: ((Result<[String],Error>) -> Void)?
+ private var active: Request?
  init(document: MarkdownDocument, host: EditorHost) { self.document = document; self.host = host; super.init() }
  func chooseDestination() {
   guard let document, let window = document.windowControllers.first?.window else { return }
@@ -240,62 +254,69 @@ struct PDFResources {
   }
  }
  func export(to target: URL, completion: @escaping (Result<[String],Error>) -> Void) {
-  cancel()
-  guard let document, let host, !document.closed else { completion(.failure(CocoaError(.userCancelled))); return }
-  let id = UUID().uuidString
-  requestID = id; self.target = target; completed = completion
+  guard let document, let host, !document.closed else { cancel(); completion(.failure(CocoaError(.userCancelled))); return }
+  let previous = active
+  let request = Request(target:target,completion:completion)
+  active = request
+  if let previous { cancel(previous) }
+  // A cancelled request's callback may synchronously start an even newer export.
+  guard active === request else { return }
   if let window = document.windowControllers.first?.window {
    let panel = NSPanel(contentRect:NSRect(x:0,y:0,width:340,height:100),styleMask:[.titled,.utilityWindow],backing:.buffered,defer:false)
    panel.title = "正在导出 PDF"; panel.isFloatingPanel = true
    let label = NSTextField(labelWithString:"使用固定快照，您可以继续编辑。")
    label.frame = NSRect(x:20,y:60,width:300,height:20); panel.contentView?.addSubview(label)
-   let button = NSButton(title:"取消导出",target:self,action:#selector(cancelExport))
+   let button = NSButton(title:"取消导出",target:self,action:#selector(cancelExport(_:)))
+   button.identifier = NSUserInterfaceItemIdentifier(request.id)
    button.frame = NSRect(x:210,y:15,width:110,height:30); panel.contentView?.addSubview(button)
    panel.setFrameOrigin(NSPoint(x:window.frame.maxX-360,y:window.frame.maxY-150))
-   window.addChildWindow(panel,ordered:.above); progress = panel
+   window.addChildWindow(panel,ordered:.above); request.progress = panel
   }
-  host.flush { [weak self] result in
-   guard let self, self.requestID == id else { return }
+  host.flush { [weak self, request] result in
+   guard let self, self.active === request else { return }
    do {
-    let snapshot = try result.get(); self.snapshot = snapshot
-    host.collectAssets(for:snapshot) { [weak self] manifest in
-     guard let self, self.requestID == id else { return }
+    let snapshot = try result.get(); request.snapshot = snapshot
+    host.collectAssets(for:snapshot) { [weak self, request] manifest in
+     guard let self, self.active === request else { return }
      do {
       let paths = try manifest.get()
       let store = try document.assets()
-      self.resources = try PDFResources(webDirectory:host.entryURL.deletingLastPathComponent(),images:store.freeze(references:paths,documentURL:document.fileURL),assetToken:store.token)
-      host.send("prepareExport",payload:["source":snapshot.source,"revision":snapshot.revision],requestID:id)
-     } catch { self.finish(.failure(error)) }
+      request.resources = try PDFResources(webDirectory:host.entryURL.deletingLastPathComponent(),images:store.freeze(references:paths,documentURL:document.fileURL),assetToken:store.token)
+      host.send("prepareExport",payload:["source":snapshot.source,"revision":snapshot.revision],requestID:request.id)
+     } catch { self.finish(request,.failure(error)) }
     }
-   } catch { self.finish(.failure(error)) }
+   } catch { self.finish(request,.failure(error)) }
   }
-  DispatchQueue.main.asyncAfter(deadline:.now() + 20) { [weak self] in
-   guard let self, self.requestID == id, self.printJob == nil else { return }
-   self.finish(.failure(HostFailure.unavailable("导出渲染超时。")))
+  DispatchQueue.main.asyncAfter(deadline:.now() + 20) { [weak self, request] in
+   guard let self, self.active === request, request.printJob == nil else { return }
+   self.finish(request,.failure(HostFailure.unavailable("导出渲染超时。")))
   }
  }
  func receive(_ envelope: BridgeEnvelope) {
-  guard envelope.requestID == requestID, let snapshot, BridgeEnvelope.integer(envelope.payload["revision"]) == snapshot.revision, let html = envelope.payload["html"] as? String, let resources, let target, printJob == nil else { return }
+  guard let request = active, envelope.requestID == request.id, let snapshot = request.snapshot, BridgeEnvelope.integer(envelope.payload["revision"]) == snapshot.revision, let html = envelope.payload["html"] as? String, let resources = request.resources, request.printJob == nil else { return }
   do {
-   let job = try PDFPrintJob(html:html,resources:resources,target:target)
-   printJob = job
-   let id = requestID
-   job.start { [weak self] result in guard self?.requestID == id else { return }; self?.finish(result) }
-  } catch { finish(.failure(error)) }
+   let job = try PDFPrintJob(html:html,resources:resources,target:request.target)
+   request.printJob = job
+   job.start { [weak self, request] result in
+    if let self { self.finish(request,result) } else { request.finish(result) }
+   }
+  } catch { finish(request,.failure(error)) }
  }
- @objc private func cancelExport() { cancel() }
- func cancel() {
-  guard requestID != nil else { return }
-  if let printJob {
-   if printJob.cancel() == .completed { return }
-   // If native printing is still unwinding it owns temporary cleanup and completion.
-   if requestID != nil { return }
-  } else { finish(.failure(CocoaError(.userCancelled))) }
+ @objc private func cancelExport(_ sender: NSButton) {
+  guard let request = active, sender.identifier?.rawValue == request.id else { return }
+  cancel(request)
  }
- private func finish(_ result: Result<[String],Error>) {
-  guard requestID != nil else { return }
-  requestID = nil; snapshot = nil; resources = nil; target = nil; printJob = nil
-  if let progress { progress.parent?.removeChildWindow(progress); progress.close(); self.progress = nil }
-  let callback = completed; completed = nil; callback?(result)
+ func cancel() { if let active { cancel(active) } }
+ private func cancel(_ request: Request) {
+  request.closeProgress()
+  if let job = request.printJob {
+   // The job owns its callback/temporary cleanup until native printing unwinds.
+   // A committed job still completes successfully; cancel cannot reverse its rename.
+   _ = job.cancel()
+  } else { finish(request,.failure(CocoaError(.userCancelled))) }
+ }
+ private func finish(_ request: Request, _ result: Result<[String],Error>) {
+  if active === request { active = nil }
+  request.finish(result)
  }
 }

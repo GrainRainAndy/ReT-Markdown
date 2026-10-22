@@ -177,8 +177,13 @@ final class AssetStore {
    }
   }
  }
+ /// Markdown destinations and capability URL paths decode exactly once here.
  func resolve(path: String, documentURL: URL?) throws -> ImageResource {
-  let path = try Self.relative(path)
+  try resolveNormalizedPath(Self.relative(path),documentURL:documentURL)
+ }
+ /// Journal paths and already decoded manifests are filesystem names, not URI text.
+ private func resolveNormalizedPath(_ path: String, documentURL: URL?) throws -> ImageResource {
+  let path = try Self.relative(path,decode:false)
   var roots: [URL] = []
   if let entry = journal.entries.first(where: {$0.path == path}) { roots = entry.roots }
   else { roots = (documentURL.map {[$0.deletingLastPathComponent()]} ?? []) + journal.recoveredRoots }
@@ -195,7 +200,7 @@ final class AssetStore {
  func freeze(references: [String], documentURL: URL?) throws -> [String: ImageResource] {
   var result: [String: ImageResource] = [:], total = 0
   for reference in Set(references) {
-   guard let path = try? Self.relative(reference), let image = try? resolve(path:path,documentURL:documentURL) else { continue }
+   guard let path = try? Self.relative(reference), let image = try? resolveNormalizedPath(path,documentURL:documentURL) else { continue }
    total += image.data.count
    guard total <= 256 * 1024 * 1024 else { throw AssetFailure.invalid("导出资源超过 256 MB。") }
    result[path] = image
@@ -208,7 +213,7 @@ final class AssetStore {
   let targetRoot = target.deletingLastPathComponent()
   if targetRoot != documentURL?.deletingLastPathComponent(), !acceptUnmanaged {
    let risks = paths.subtracting(managed).filter { path in
-    guard let old = try? resolve(path:path,documentURL:documentURL) else { return true }
+    guard let old = try? resolveNormalizedPath(path,documentURL:documentURL) else { return true }
     guard let bytes = try? Self.readAsset(path,root:targetRoot) else { return true }
     return bytes != old.data
    }.sorted()
@@ -220,7 +225,7 @@ final class AssetStore {
   journal.transactions.removeAll { $0.id == transaction.id || $0.target == target || $0.committed }; journal.transactions.append(transaction)
   try persist()
   for path in selected {
-   let image = try resolve(path:path,documentURL:documentURL)
+   let image = try resolveNormalizedPath(path,documentURL:documentURL)
    _ = try Self.authorized(path,root:targetRoot)
    try install(image.data,path:path,root:targetRoot,hash:digest(image.data))
   }
