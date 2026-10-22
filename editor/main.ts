@@ -71,6 +71,7 @@ let received = 0,
 let fileName = "未命名.md";
 const imageRequests = new Map<string, { anchor: number; head: number }>();
 const host = new HostBridge(receive, () => {
+  if (inputHeld) return false;
   if (!composing && !draft) return true;
   notice("当前输入尚未提交，拒绝替换文稿");
   return false;
@@ -79,6 +80,7 @@ const find = new FindPanel(
   app,
   () => session,
   (selection) => {
+    if (inputHeld || host.replacing) return;
     session.setSelection(selection);
     if (mode !== "source") {
       mode = "source";
@@ -87,6 +89,7 @@ const find = new FindPanel(
     literal?.view.dispatch({ effects: [], scrollIntoView: true });
   },
   (intent) => {
+    if (inputHeld || host.replacing) return;
     if (mode !== "source") {
       mode = "source";
       mount();
@@ -196,7 +199,13 @@ function commandOwnsFocus(id: string): boolean {
   return globalCommands.has(id) || markdownOwnsFocus();
 }
 function commandEnabled(id: string): boolean {
-  if (host.replacing || composing || draft || !commandOwnsFocus(id))
+  if (
+    inputHeld ||
+    host.replacing ||
+    composing ||
+    draft ||
+    !commandOwnsFocus(id)
+  )
     return false;
   if (id === "undo") return session.canUndo || imageRequests.size > 0;
   if (id === "redo") return session.canRedo;
@@ -241,6 +250,23 @@ function updateStatus(): void {
   modeButton.textContent = mode === "rich" ? "源码" : "实时";
   publishCommandState();
 }
+const pendingFlushes = new Map<string, ReturnType<typeof setTimeout>>();
+let holdForClose = false;
+let inputHeld = false;
+function finishFlush(requestId: string): void {
+  if (holdForClose && !draft) {
+    inputHeld = true;
+    workspace.inert = true;
+    publishCommandState();
+  }
+  host.send(
+    "flushResult",
+    draft
+      ? { status: "pending", reason: "recovery-draft" }
+      : { status: "ready", source: session.source, revision: revision() },
+    requestId,
+  );
+}
 function composition(active: boolean): void {
   composing = active;
   updateStatus();
@@ -251,6 +277,11 @@ function composition(active: boolean): void {
     const assets = queuedAssets;
     queuedAssets = [];
     for (const asset of assets) receive(asset);
+    for (const [id, timer] of pendingFlushes) {
+      clearTimeout(timer);
+      finishFlush(id);
+    }
+    pendingFlushes.clear();
   }
 }
 function recover(
@@ -272,7 +303,7 @@ function recover(
 }
 function showRecovery(): void {
   recoveryPanel.hidden = !draft;
-  workspace.inert = !!draft || host.replacing;
+  workspace.inert = inputHeld || !!draft || host.replacing;
   if (!draft) return;
   document.querySelector("#recovery-reason")!.textContent = draft.reason;
   document.querySelector("#draft-content")!.textContent = draft.content;
@@ -280,7 +311,7 @@ function showRecovery(): void {
   updateStatus();
 }
 function apply(intent: Intent, group?: string): void {
-  if (host.replacing) return;
+  if (inputHeld || host.replacing) return;
   if (draft && !resolving) {
     notice("请先恢复或放弃未提交输入");
     return;
@@ -375,6 +406,10 @@ function load(payload: Record<string, unknown>): void {
   setAssetCapability(
     typeof payload.assetToken === "string" ? payload.assetToken : "document",
   );
+  for (const timer of pendingFlushes.values()) clearTimeout(timer);
+  pendingFlushes.clear();
+  holdForClose = false;
+  inputHeld = false;
   unsubscribe?.();
   exportRequest?.abort.abort();
   exportRequest = undefined;
@@ -442,19 +477,36 @@ function receive(message: Envelope): void {
     case "command":
       if (typeof p.id === "string") execute(p.id);
       break;
+    case "flushRelease":
+      holdForClose = false;
+      inputHeld = false;
+      workspace.inert = inputHeld || !!draft || host.replacing;
+      publishCommandState();
+      break;
     case "flush":
+      holdForClose ||= p.holdInput === true;
       imageRequests.clear();
       queuedAssets = [];
-      host.send(
-        "flushResult",
-        composing || draft
-          ? {
-              status: "pending",
-              reason: draft ? "recovery-draft" : "composition",
-            }
-          : { status: "ready", source: session.source, revision: revision() },
-        message.requestId,
-      );
+      if (composing && !draft) {
+        if (!pendingFlushes.has(message.requestId)) {
+          pendingFlushes.set(
+            message.requestId,
+            setTimeout(() => {
+              if (!pendingFlushes.delete(message.requestId)) return;
+              host.send(
+                "flushResult",
+                { status: "pending", reason: "composition-timeout" },
+                message.requestId,
+              );
+            }, 10000),
+          );
+          host.send(
+            "flushResult",
+            { status: "pending", reason: "composition" },
+            message.requestId,
+          );
+        }
+      } else finishFlush(message.requestId);
       break;
     case "saved":
       if (
@@ -556,7 +608,7 @@ function receive(message: Envelope): void {
   }
 }
 function execute(id: string): void {
-  if (host.replacing || !commandOwnsFocus(id)) return;
+  if (inputHeld || host.replacing || !commandOwnsFocus(id)) return;
   if (id.startsWith("zoom")) {
     zoom =
       id === "zoomReset"
@@ -979,7 +1031,7 @@ for (const type of [
   workspace.addEventListener(
     type,
     (event) => {
-      if (host.replacing) {
+      if (inputHeld || host.replacing) {
         event.preventDefault();
         event.stopImmediatePropagation();
       }

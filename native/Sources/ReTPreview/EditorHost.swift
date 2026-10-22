@@ -100,15 +100,20 @@ import WebKit
   send("load", payload: document.loadPayload)
  }
  func command(_ id: String) { if ready, commandEnabled[id] == true { send("command", payload: ["id":id]) } }
- func flush(_ completion: @escaping (Result<Snapshot, Error>) -> Void) {
-  if document?.state.recoveryDraft != nil { completion(.failure(HostFailure.pending("recovery draft"))); return }
-  guard ready, !invalidated else { completion(.failure(HostFailure.unavailable("编辑器尚未就绪；已接收的恢复副本仍保留。"))); return }
+ @discardableResult func flush(timeout: TimeInterval = 10, holdingInput: Bool = false, _ completion: @escaping (Result<Snapshot, Error>) -> Void) -> String? {
+  if document?.state.recoveryDraft != nil { completion(.failure(HostFailure.pending("recovery draft"))); return nil }
+  guard ready, !invalidated else { completion(.failure(HostFailure.unavailable("编辑器尚未就绪；已接收的恢复副本仍保留。"))); return nil }
   let id = UUID().uuidString
   pending[id] = completion
-  send("flush", payload: [:], requestID: id)
-  DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+  send("flush", payload: ["holdInput":holdingInput], requestID: id)
+  DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
    self?.pending.removeValue(forKey: id)?(.failure(HostFailure.unavailable("编辑器未响应保存屏障。请重试；未确认保存成功。")))
   }
+  return id
+ }
+ func releaseInput() { send("flushRelease", payload: [:]) }
+ func cancelFlush(_ requestID: String) {
+  pending.removeValue(forKey: requestID)?(.failure(CocoaError(.userCancelled)))
  }
  func collectAssets(for snapshot: Snapshot, completion: @escaping (Result<[String], Error>) -> Void) {
   guard ready, !invalidated else { completion(.failure(HostFailure.unavailable("编辑器尚未就绪。"))); return }
@@ -156,6 +161,7 @@ import WebKit
    callback(.success(envelope.payload["paths"] as! [String])); return
   }
   if envelope.method == "flushResult" {
+   if envelope.payload["status"] as? String == "pending", envelope.payload["reason"] as? String == "composition" { return }
    guard let callback = pending.removeValue(forKey: envelope.requestID) else { return }
    if envelope.payload["status"] as? String == "pending" { callback(.failure(HostFailure.pending(envelope.payload["reason"] as? String ?? "pending"))); return }
    let snapshot = Snapshot(source: envelope.payload["source"] as! String, revision: BridgeEnvelope.integer(envelope.payload["revision"])!)

@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Darwin
 struct RecoveryRecord: Codable, Equatable {
  let documentID: String
  let fileURL: URL?
@@ -55,6 +56,24 @@ struct RecoveryStore {
  func remove(documentID: String) {
   guard validID(documentID) else { return }
   for generation in ["current", "previous"] { try? FileManager.default.removeItem(at: path(documentID, generation)) }
+ }
+ /// Normal-exit durability: unlink both generations on the serial journal queue,
+ /// then synchronize the directory before allowing NSDocument to leave its controller.
+ /// Failure cancels closing; this does not claim power-loss atomicity across unlinks.
+ func removeDurably(documentID: String) throws {
+  guard validID(documentID) else { throw CocoaError(.fileWriteInvalidFileName) }
+  let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY)
+  if descriptor < 0 {
+   if errno == ENOENT { return }
+   throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+  }
+  defer { Darwin.close(descriptor) }
+  for generation in ["current", "previous"] {
+   if unlinkat(descriptor, "\(documentID).\(generation).json", 0) != 0, errno != ENOENT {
+    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+   }
+  }
+  guard fsync(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
  }
  static var applicationStore: RecoveryStore {
   let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

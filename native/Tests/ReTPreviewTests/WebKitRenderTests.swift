@@ -5,7 +5,8 @@ import WebKit
 
 final class WebKitRenderTests: RecoveryIsolatedTestCase {
  static var entry: URL {
-  URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/rewrite/0.2.0-alpha.1/ReT Markdown Preview.app/Contents/Resources/web/index.html")
+  if let path = ProcessInfo.processInfo.environment["RET_TEST_WEB_ENTRY"] { return URL(fileURLWithPath: path) }
+  return URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("dist/web/index.html")
  }
  func testBundledFileWorkerActuallyTypesetsKaTeX() async throws {
   let web = await MainActor.run { () -> WKWebView in

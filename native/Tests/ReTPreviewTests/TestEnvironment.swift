@@ -1,9 +1,11 @@
 import XCTest
 import Foundation
+import AppKit
 @testable import ReTPreview
 
 /// Test-owned storage and work queue. No document fixture uses the application store.
 final class DocumentTestEnvironment {
+ @MainActor static let controller = PreviewDocumentController()
  let root: URL
  let recoveryStore: RecoveryStore
  let recoveryQueue: DispatchQueue
@@ -15,6 +17,7 @@ final class DocumentTestEnvironment {
   try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
  }
  @MainActor func makeDocument() -> MarkdownDocument {
+  _ = Self.controller
   let document = MarkdownDocument(recoveryStore: recoveryStore, recoveryQueue: recoveryQueue)
   documentIDs.insert(document.state.documentID)
   return document
@@ -55,5 +58,31 @@ class RecoveryIsolatedTestCase: XCTestCase {
   defer { environment = nil }
   if let environment { try environment.remove() }
   try super.tearDownWithError()
+ }
+}
+
+@MainActor extension RecoveryIsolatedTestCase {
+ func attachEditor(source: String = "") async throws -> MarkdownDocument {
+  _ = NSApplication.shared
+  XCTAssertTrue(FileManager.default.fileExists(atPath: WebKitRenderTests.entry.path), "Build the web assets before native tests: \(WebKitRenderTests.entry.path)")
+  let document = environment.makeDocument()
+  try document.read(from: Data(source.utf8), ofType: "net.daringfireball.markdown")
+  let host = EditorHost(document: document, entryURL: WebKitRenderTests.entry)
+  document.host = host
+  try await eventually { (try? await self.evaluateEditor(document, "return !!document.querySelector('.ProseMirror')")) as? Bool == true }
+  // A native flush proves the ready/load handshake, not only DOM construction.
+  _ = try await withCheckedThrowingContinuation { (c: CheckedContinuation<Snapshot, Error>) in host.flush { c.resume(with: $0) } }
+  return document
+ }
+ func evaluateEditor(_ document: MarkdownDocument, _ code: String, arguments: [String:Any] = [:]) async throws -> Any? {
+  try await withCheckedThrowingContinuation { c in document.host!.webView.callAsyncJavaScript(code, arguments: arguments, in: nil, in: .page) { c.resume(with: $0) } }
+ }
+ func eventually(file: StaticString = #filePath, line: UInt = #line, _ condition: () async throws -> Bool) async throws {
+  for _ in 0..<250 {
+   if try await condition() { return }
+   try await Task.sleep(nanoseconds: 20_000_000)
+  }
+  XCTFail("Condition never became true", file: file, line: line)
+  throw CocoaError(.coderValueNotFound)
  }
 }

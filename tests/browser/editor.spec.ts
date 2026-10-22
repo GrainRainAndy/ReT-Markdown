@@ -263,3 +263,156 @@ test("rejected load during composition does not adopt the replacement epoch", as
     ),
   ).toBe("kept");
 });
+
+for (const mode of ["rich", "source"]) {
+  test(`${mode} original overlapping flush requests resume once after composition commits`, async ({
+    page,
+  }) => {
+    await load(page, "start");
+    if (mode === "source") await command(page, "toggleSource");
+    const input = page
+      .locator(mode === "rich" ? ".ProseMirror" : ".cm-content")
+      .first();
+    await input.click();
+    await page.keyboard.press("ControlOrMeta+End");
+    await input.dispatchEvent("compositionstart");
+    await page.keyboard.insertText("中文");
+    await page.evaluate(() => {
+      for (const requestId of ["pending-one", "pending-two"])
+        (window as any).retNative.receive({
+          v: 1,
+          documentId: "doc-a",
+          epoch: "epoch-a",
+          requestId,
+          method: "flush",
+          payload: {},
+        });
+    });
+    const replies = () =>
+      page.evaluate(() =>
+        (window as any).hostMessages.filter(
+          (m: any) =>
+            m.method === "flushResult" &&
+            m.payload.status === "ready" &&
+            m.requestId.startsWith("pending-"),
+        ),
+      );
+    expect(await replies()).toEqual([]);
+    await input.dispatchEvent("compositionend");
+    await expect.poll(replies).toHaveLength(2);
+    const results = await replies();
+    expect(results.map((m: any) => m.requestId).sort()).toEqual([
+      "pending-one",
+      "pending-two",
+    ]);
+    for (const result of results)
+      expect(result.payload.source).toBe("start中文");
+    await input.dispatchEvent("compositionend");
+    expect(await replies()).toHaveLength(2);
+  });
+}
+test("close flush holds editing until cancellation releases it", async ({
+  page,
+}) => {
+  await load(page, "saved");
+  await page.locator(".ProseMirror").click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.insertText(" edit");
+  await expect.poll(() => source(page)).toBe("saved edit");
+  await page.evaluate(() =>
+    (window as any).retNative.receive({
+      v: 1,
+      documentId: "doc-a",
+      epoch: "epoch-a",
+      requestId: "close",
+      method: "flush",
+      payload: { holdInput: true },
+    }),
+  );
+  await expect(page.locator("#workspace")).toHaveJSProperty("inert", true);
+  await command(page, "undo");
+  expect(await source(page)).toBe("saved edit");
+  await page.evaluate(() =>
+    (window as any).retNative.receive({
+      v: 1,
+      documentId: "doc-a",
+      epoch: "epoch-a",
+      requestId: "cancel-close",
+      method: "flushRelease",
+      payload: {},
+    }),
+  );
+  await expect(page.locator("#workspace")).toHaveJSProperty("inert", false);
+  await page.locator(".ProseMirror").click();
+  await command(page, "undo");
+  await expect.poll(() => source(page)).toBe("saved");
+});
+test("composition timeout removes original requests before a late commit", async ({
+  page,
+}) => {
+  await load(page, "saved");
+  await page.clock.install();
+  await page.locator(".ProseMirror").dispatchEvent("compositionstart");
+  await page.evaluate(() =>
+    (window as any).retNative.receive({
+      v: 1,
+      documentId: "doc-a",
+      epoch: "epoch-a",
+      requestId: "expire",
+      method: "flush",
+      payload: {},
+    }),
+  );
+  await page.clock.fastForward(10001);
+  await page.locator(".ProseMirror").dispatchEvent("compositionend");
+  const replies = await page.evaluate(() =>
+    (window as any).hostMessages
+      .filter(
+        (m: any) => m.method === "flushResult" && m.requestId === "expire",
+      )
+      .map((m: any) => m.payload),
+  );
+  expect(replies).toEqual([
+    { status: "pending", reason: "composition" },
+    { status: "pending", reason: "composition-timeout" },
+  ]);
+});
+test("close hold rejects an already-open replace panel and reload preparation", async ({
+  page,
+}) => {
+  await load(page, "saved");
+  await page.locator(".ProseMirror").click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.keyboard.insertText(" edit");
+  await command(page, "replace");
+  await page.getByLabel("查找内容", { exact: true }).fill("saved");
+  await page.getByLabel("替换为", { exact: true }).fill("overwritten");
+  await page.evaluate(() =>
+    (window as any).retNative.receive({
+      v: 1,
+      documentId: "doc-a",
+      epoch: "epoch-a",
+      requestId: "hold",
+      method: "flush",
+      payload: { holdInput: true },
+    }),
+  );
+  await page.getByRole("button", { name: "全部替换", exact: true }).click();
+  expect.soft(await source(page)).toBe("saved edit");
+  await page.evaluate(() =>
+    (window as any).retNative.receive({
+      v: 1,
+      documentId: "doc-a",
+      epoch: "epoch-a",
+      requestId: "reload-held",
+      method: "reloadPrepare",
+      payload: { epoch: "epoch-b", load: { source: "external", revision: 0 } },
+    }),
+  );
+  const reply = await page.evaluate(() =>
+    (window as any).hostMessages.find(
+      (m: any) => m.method === "reloadReady" && m.requestId === "reload-held",
+    ),
+  );
+  expect(reply.payload.status).toBe("pending");
+});

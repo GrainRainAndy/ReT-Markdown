@@ -28,7 +28,7 @@ final class AssetIntegrationTests: RecoveryIsolatedTestCase {
    document.host!.webView.callAsyncJavaScript("const dt=new DataTransfer();dt.items.add(new File([Uint8Array.from(atob(data),c=>c.charCodeAt(0))],'图 #%.svg',{type:'image/svg+xml'}));document.querySelector('.ProseMirror').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:dt}));",arguments:["data":svg.base64EncodedString()],in:nil,in:.page) { result in if case .failure(let error)=result { XCTFail("\(error)") } }
   }
   try await Task.sleep(nanoseconds:300_000_000)
-  await MainActor.run {
+  _ = await MainActor.run {
    document.host!.flush { result in
     do {
      let snapshot = try result.get(); XCTAssertTrue(snapshot.source.contains("![图片]("))

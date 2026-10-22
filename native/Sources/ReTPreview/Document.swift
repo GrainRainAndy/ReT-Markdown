@@ -10,6 +10,8 @@ import AppKit
  private var diskBytes: Data?
  private var saveActive = false
  private var saveQueue: [() -> Void] = []
+ private var closeFinished = false
+ private var cleanupWaiters: [(Bool) -> Void] = []
  var closed = false
  var serviceGeneration = 0
  var assetStore: AssetStore?
@@ -17,6 +19,7 @@ import AppKit
  var pdfExport: PDFExportController?
  var assetDirectory: URL { recovery.directory.deletingLastPathComponent().appendingPathComponent("Assets", isDirectory:true) }
  private var closeActive = false
+ private var closeWaiters: [(Bool) -> Void] = []
  private var closeSaveCompletion: ((Bool) -> Void)?
  private var externalCheckActive = false
  private struct ReloadAuthorization: Equatable {
@@ -98,6 +101,7 @@ import AppKit
   if state.isDirty || state.recoveryDraft != nil { updateChangeCount(.changeDone) }
  }
  private func persistRecovery(_ snapshot: Snapshot, requestID: String? = nil, onDurable: (() -> Void)? = nil) {
+  guard !closed else { return }
   let epoch = state.epoch
   let record = RecoveryRecord(documentID: state.documentID, fileURL: fileURL, snapshot: snapshot, date: Date(), recoveryDraft: state.recoveryDraft)
   journal.write(record, acknowledge: { [weak self] stage in
@@ -156,6 +160,7 @@ import AppKit
     case .success:
      self.writeSnapshot = snapshot
      self.systemSave(to: url, type: typeName, operation: saveOperation) { error in
+      guard !self.closed else { finish(CocoaError(.userCancelled)); return }
       if error == nil {
        if saveOperation != .autosaveElsewhereOperation && saveOperation != .saveToOperation {
         self.state.markSaved(snapshot); self.diskBytes = UTF8File.encode(snapshot.source)
@@ -194,33 +199,46 @@ import AppKit
   try super.writeSafely(to: url, ofType: typeName, for: saveOperation)
  }
  override func canClose(withDelegate delegate: Any, shouldClose shouldCloseSelector: Selector?, contextInfo: UnsafeMutableRawPointer?) {
-  guard !closeActive else { return }
-  closeActive = true
-  var responded = false
-  let respond: (Bool) -> Void = { [weak self] value in
-   guard !responded else { return }; responded = true
-   self?.closeActive = false
+  closeWaiters.append { [weak self] value in
    guard let self, let selector = shouldCloseSelector, let object = delegate as? NSObject else { return }
    typealias Callback = @convention(c) (AnyObject, Selector, NSDocument, Bool, UnsafeMutableRawPointer?) -> Void
    let callback = unsafeBitCast(object.method(for: selector), to: Callback.self)
    callback(object, selector, self, value, contextInfo)
+  }
+  guard !closeActive else { return }
+  closeActive = true
+  var responded = false
+  let respond: (Bool) -> Void = { [weak self] value in
+   guard !responded, let self else { return }; responded = true
+   self.closeActive = false
+   if !value { self.host?.releaseInput() }
+   let waiters = self.closeWaiters; self.closeWaiters.removeAll()
+   for waiter in waiters { waiter(value) }
    self.advanceSaveQueue()
   }
+  var beganFlush = false
   let proceed = { [weak self] in
+   guard !responded else { self?.advanceSaveQueue(); return }
+   beganFlush = true
    guard let self else { respond(false); return }
    guard let host = self.host else { self.closeDecision(pending: true, respond: respond); return }
-   host.flush { result in
+   host.flush(holdingInput: true) { result in
     switch result {
     case .success: self.closeDecision(pending: false, respond: respond)
     case .failure(let error): self.closeDecision(pending: true, reason: error.localizedDescription, respond: respond)
     }
    }
   }
-  if saveActive { saveQueue.append(proceed) } else { proceed() }
+  if saveActive {
+   saveQueue.append(proceed)
+   DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+    if !beganFlush { respond(false) }
+   }
+  } else { proceed() }
  }
  private func closeDecision(pending: Bool, reason: String = "编辑器未就绪。", respond: @escaping (Bool) -> Void) {
-  guard let window = windowControllers.first?.window else { respond(false); return }
   if !pending && !state.isDirty { respond(true); return }
+  guard let window = windowControllers.first?.window else { respond(false); return }
   let alert = NSAlert()
   alert.messageText = pending ? "尚有未确认的输入" : "保存对“\(displayName ?? "未命名")”的更改？"
   alert.informativeText = pending ? reason + " 取消可继续编辑；放弃将关闭当前输入。" : "可保存当前文稿、放弃尚未保存的修改，或返回继续编辑。已完成的自动保存保留在磁盘及版本历史中。"
@@ -240,12 +258,35 @@ import AppKit
   let callback = closeSaveCompletion; closeSaveCompletion = nil
   callback?(didSave && !state.isDirty && state.recoveryDraft == nil)
  }
- override func close() {
-  closed = true; serviceGeneration += 1; pdfExport?.cancel(); host?.invalidate(); host = nil
+ override func close() { closeDurably { _ in } }
+ func closeDurably(_ completion: @escaping (Bool) -> Void) {
+  if closeFinished { completion(true); return }
+  cleanupWaiters.append(completion)
+  guard !closed else { return }
+  closed = true; serviceGeneration += 1; pdfExport?.cancel()
   let id = state.documentID, store = recovery
-  recoveryQueue.async { store.remove(documentID: id) }
-  super.close()
+  recoveryQueue.async {
+   let result = Result { try store.removeDurably(documentID: id) }
+   DispatchQueue.main.async { [self] in
+    let success: Bool
+    switch result {
+    case .success:
+     host?.invalidate(); host = nil
+     closeFinished = true
+     finishSystemClose()
+     success = true
+    case .failure(let error):
+     closed = false
+     host?.releaseInput()
+     report(error, operation: "closeRecovery")
+     success = false
+    }
+    let callbacks = cleanupWaiters; cleanupWaiters.removeAll()
+    for callback in callbacks { callback(success) }
+   }
+  }
  }
+ private func finishSystemClose() { super.close() }
  override func revertToSaved(_ sender: Any?) {
   guard let url = fileURL else { return }
   reloadExternal(url)
