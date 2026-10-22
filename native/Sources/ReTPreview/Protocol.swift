@@ -29,7 +29,8 @@ struct BridgeEnvelope {
    else if status == "pending" { guard let reason = payload["reason"] as? String, reason.utf8.count <= 1024 else { return nil } }
    else { return nil }
   case "importImage":
-   guard Set(payload.keys).isSubset(of: ["dataURL", "fileName"]) else { return nil }
+   guard Set(payload.keys).isSubset(of: ["dataURL", "fileName", "source"]) else { return nil }
+   if let source = payload["source"] { guard let value = source as? String, value == "clipboard", payload["dataURL"] == nil else { return nil } }
    if let data = payload["dataURL"] { guard let text = data as? String, text.utf8.count <= 40 * 1024 * 1024 else { return nil } }
    if let name = payload["fileName"] { guard let text = name as? String, text.utf8.count <= 1024 else { return nil } }
   case "exportContent": guard let html = payload["html"] as? String, html.utf8.count <= 64 * 1024 * 1024, integer(payload["revision"]) != nil else { return nil }

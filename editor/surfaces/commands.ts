@@ -293,6 +293,30 @@ export function blockIntent(
     s,
   );
 }
+/** Rich boundary selections visibly treat code/math as whole objects. */
+export function expandLiteralSelection(
+  source: string,
+  s: LogicalSelection,
+): LogicalSelection {
+  if (s.owner.kind !== "prose" || s.anchor.offset === s.head.offset) return s;
+  let from = Math.min(s.anchor.offset, s.head.offset),
+    to = Math.max(s.anchor.offset, s.head.offset);
+  for (const node of flatten(buildProjection(source).blocks))
+    if (
+      ["code", "math"].includes(node.type) &&
+      from < node.to &&
+      to > node.from
+    ) {
+      from = Math.min(from, node.from);
+      to = Math.max(to, node.to);
+    }
+  const forward = s.anchor.offset < s.head.offset;
+  return {
+    ...s,
+    anchor: { ...s.anchor, offset: forward ? from : to },
+    head: { ...s.head, offset: forward ? to : from },
+  };
+}
 export function clipboardRange(
   source: string,
   s: LogicalSelection,

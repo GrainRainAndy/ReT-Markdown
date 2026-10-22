@@ -311,7 +311,7 @@ test("literal boundary arrows transfer owner without editing and Shift extends s
     );
     return d.getData("text/plain");
   });
-  expect(payload).toBe("~~~\n\n");
+  expect(payload).toBe("~~~\nx\n~~~\n\n");
   expect(await source(page)).toBeUndefined();
   await page.keyboard.press("ArrowRight");
   await page.keyboard.type("Y");

@@ -11,7 +11,7 @@ import {
   type Intent,
 } from "./surfaces/editing";
 import { mapText } from "./syntax/mapping";
-import { renderDocument, assetURL } from "./render/document";
+import { renderSourceDocument, assetURL } from "./render/document";
 import {
   headingIntent,
   markIntent,
@@ -20,6 +20,7 @@ import {
   containing,
   mapOffset,
 } from "./surfaces/commands";
+import { renderer } from "./render/client";
 import { FindPanel } from "./surfaces/find";
 const app = document.querySelector<HTMLElement>("#app")!;
 app.innerHTML =
@@ -41,6 +42,14 @@ let session = new DocumentSession(""),
   lastRevision = 0,
   unsubscribe: (() => void) | undefined;
 let mountGeneration = 0;
+let exportRequest:
+  | {
+      abort: AbortController;
+      documentId: string;
+      epoch: string;
+      requestId: string;
+    }
+  | undefined;
 let queued: string[] = [];
 let queuedAssets: Envelope[] = [];
 let received = 0,
@@ -96,8 +105,10 @@ function ask(
   form.append(title, ok, cancel);
   form.onsubmit = (e) => {
     e.preventDefault();
-    accept(input.value);
+    const value = input.value;
     dialog.close();
+    dialog.remove();
+    accept(value);
   };
   dialog.append(form);
   app.append(dialog);
@@ -106,7 +117,7 @@ function ask(
   input.focus();
   input.select();
 }
-function importImage(file?: File): void {
+function importImage(file?: File, source?: "clipboard"): void {
   if (!host.native) {
     notice("图片导入需要 macOS 文稿宿主");
     return;
@@ -132,7 +143,7 @@ function importImage(file?: File): void {
       notice("无法读取剪贴板图片");
     };
     reader.readAsDataURL(file);
-  } else host.send("importImage", {}, id);
+  } else host.send("importImage", source ? { source } : {}, id);
 }
 function notice(text: string): void {
   const node = document.querySelector<HTMLElement>("#notice")!;
@@ -276,6 +287,8 @@ function load(payload: Record<string, unknown>): void {
     return;
   }
   unsubscribe?.();
+  exportRequest?.abort.abort();
+  exportRequest = undefined;
   imageRequests.clear();
   session = new DocumentSession(String(payload.source ?? ""));
   session.setSelection(logical(session.source.startsWith("\uFEFF") ? 1 : 0));
@@ -359,8 +372,8 @@ function receive(message: Envelope): void {
         queuedAssets.push(message);
         break;
       }
-      const id =
-          typeof p.requestId === "string" ? p.requestId : message.requestId,
+      if (p.requestId !== undefined && p.requestId !== message.requestId) break;
+      const id = message.requestId,
         bookmark = imageRequests.get(id);
       if (!bookmark) break;
       imageRequests.delete(id);
@@ -391,11 +404,37 @@ function receive(message: Envelope): void {
     case "prepareExport": {
       const source = typeof p.source === "string" ? p.source : session.source;
       const frozen = typeof p.revision === "number" ? p.revision : revision();
-      host.send(
-        "exportContent",
-        { html: renderDocument(source), revision: frozen },
-        message.requestId,
-      );
+      exportRequest?.abort.abort();
+      const request = {
+        abort: new AbortController(),
+        documentId: host.documentId,
+        epoch: host.epoch,
+        requestId: message.requestId,
+      };
+      exportRequest = request;
+      void renderer
+        .run({ kind: "document", source }, request.abort.signal)
+        .then((result) => {
+          if (
+            exportRequest !== request ||
+            request.abort.signal.aborted ||
+            host.documentId !== request.documentId ||
+            host.epoch !== request.epoch
+          )
+            return;
+          exportRequest = undefined;
+          host.send(
+            "exportContent",
+            {
+              html:
+                result.status === "ready"
+                  ? result.html
+                  : renderSourceDocument(source, result.status),
+              revision: frozen,
+            },
+            message.requestId,
+          );
+        });
       break;
     }
   }
@@ -491,6 +530,10 @@ function execute(id: string): void {
     } else notice("PDF 导出需要 macOS 宿主");
     return;
   }
+  if (id === "pasteImage") {
+    importImage(undefined, "clipboard");
+    return;
+  }
   if (id === "insertImage") {
     importImage();
     return;
@@ -539,7 +582,13 @@ function execute(id: string): void {
       return;
     }
     const match = /^([`~]+)([^\r\n]*)/.exec(node.raw)!;
+    const bookmark = session.selection,
+      openedRevision = session.revision;
     ask("代码语言", String(node.attributes.lang ?? ""), (value) => {
+      if (session.revision !== openedRevision) {
+        notice("文稿已改变，请重新打开代码语言设置");
+        return;
+      }
       if (/[\r\n`~]/.test(value)) {
         notice("语言标记不能包含换行或围栏字符");
         return;
@@ -556,14 +605,14 @@ function execute(id: string): void {
       apply({
         patches: [patch],
         selection: {
-          ...session.selection,
+          ...bookmark,
           anchor: {
-            ...session.selection.anchor,
-            offset: mapOffset(session.selection.anchor.offset, [patch]),
+            ...bookmark.anchor,
+            offset: mapOffset(bookmark.anchor.offset, [patch]),
           },
           head: {
-            ...session.selection.head,
-            offset: mapOffset(session.selection.head.offset, [patch]),
+            ...bookmark.head,
+            offset: mapOffset(bookmark.head.offset, [patch]),
           },
         },
       });

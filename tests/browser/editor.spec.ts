@@ -182,6 +182,15 @@ test("composition barriers and frozen export use public protocol and loaded revi
       payload: { source: "# frozen", revision: 4 },
     }),
   );
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as any).hostMessages.some(
+          (m: any) => m.requestId === "export" && m.method === "exportContent",
+        ),
+      ),
+    )
+    .toBe(true);
   const result = await page.evaluate(() =>
     (window as any).hostMessages.find((m: any) => m.requestId === "export"),
   );

@@ -19,6 +19,17 @@ final class ProtocolTests: RecoveryIsolatedTestCase {
   ready["documentId"] = "other"
   XCTAssertNil(BridgeEnvelope.parse(ready, trusted: true, documentID: "doc", epoch: "epoch"))
  }
+ func testClipboardImageSourceIsExplicitAndUnambiguous() {
+  func parse(_ payload: [String: Any]) -> BridgeEnvelope? {
+   BridgeEnvelope.parse(["v":1,"documentId":"doc","epoch":"epoch","requestId":"image","method":"importImage","payload":payload], trusted:true, documentID:"doc", epoch:"epoch")
+  }
+  XCTAssertNotNil(parse([:]))
+  XCTAssertNotNil(parse(["dataURL":"data:image/png;base64,AA==","fileName":"clip.png"]))
+  XCTAssertNotNil(parse(["source":"clipboard"]))
+  XCTAssertNil(parse(["source":"clipboard","dataURL":"data:image/png;base64,AA=="]))
+  XCTAssertNil(parse(["source":"picker"]))
+  XCTAssertNil(parse(["source":1]))
+ }
  func testByteDifferentUnicodeRemainsDirty() {
   var state = DocumentState(documentID: "d", epoch: "e", source: "\u{E9}")
   _ = state.receive(Snapshot(source: "e\u{301}", revision: 1), documentID: "d", epoch: "e")

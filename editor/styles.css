@@ -349,3 +349,8 @@ footer button {
 .context-menu button:hover {
   background: var(--code);
 }
+
+.literal.selected-literal {
+  outline: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--code));
+}

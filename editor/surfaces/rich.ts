@@ -21,6 +21,7 @@ import {
   type Intent,
 } from "./editing";
 import {
+  expandLiteralSelection,
   indentIntent,
   clipboardRange,
   tableClipboard,
@@ -30,7 +31,8 @@ import {
   mapOffset,
 } from "./commands";
 import { plainMarkdown, clipboardHTML } from "./clipboard";
-import { mathHTML, assetURL } from "../render/document";
+import { assetURL } from "../render/document";
+import { LiveMath } from "../render/live";
 import { recoverProseSource } from "./recovery";
 export interface SurfaceOptions {
   session: DocumentSession;
@@ -156,13 +158,14 @@ export class RichSurface {
             ...logical(record.node.from, record.node.to),
             kind: "node",
           });
-      } else
-        this.options.session.setSelection(
-          this.selectionAt(
-            this.projection.sourceAt(s.anchor),
-            this.projection.sourceAt(s.head),
-          ),
-        );
+      } else {
+        const anchor = this.projection.sourceAt(s.anchor),
+          head = this.projection.sourceAt(s.head),
+          safe = this.selectionAt(anchor, head);
+        this.options.session.setSelection(safe);
+        if (safe.anchor.offset !== anchor || safe.head.offset !== head)
+          this.refresh();
+      }
     }
   }
   private commitView(): void {
@@ -239,25 +242,49 @@ export class RichSurface {
     dom.contentEditable = "false";
     const label = document.createElement("div");
     label.className = "literal-label";
-    label.textContent =
-      node.attrs.kind === "math"
-        ? "公式源码"
-        : node.attrs.kind === "raw"
-          ? "原始 Markdown"
-          : String(node.attrs.language || "代码");
+    const updateLabel = () => {
+      label.textContent =
+        node.attrs.kind === "math"
+          ? "公式源码"
+          : node.attrs.kind === "raw"
+            ? "原始 Markdown"
+            : String(node.attrs.language || "代码");
+      label.title =
+        node.attrs.kind === "code"
+          ? "修改代码语言"
+          : node.attrs.kind === "math"
+            ? "编辑公式源码"
+            : "编辑原始 Markdown";
+    };
+    updateLabel();
     dom.append(label);
     label.tabIndex = 0;
     label.setAttribute("role", "button");
-    label.title = "修改代码语言";
     const preview = document.createElement("button");
     preview.className = "math-preview";
     preview.type = "button";
     preview.setAttribute("aria-label", "编辑公式源码");
     if (node.attrs.kind === "math") {
-      preview.innerHTML = mathHTML(String(node.attrs.text), true);
       dom.append(preview);
     }
     const getRecord = () => this.projection.records.get(String(node.attrs.id));
+    const math =
+      node.attrs.kind === "math"
+        ? new LiveMath(
+            preview,
+            () => {
+              const r = getRecord();
+              return r
+                ? {
+                    key: r.id,
+                    text: String(node.attrs.text),
+                    revision: this.options.session.revision,
+                  }
+                : null;
+            },
+            true,
+          )
+        : undefined;
     const owner = (): Owner => ({
       kind: node.attrs.kind === "math" ? "math" : "code",
       nodeId: String(node.attrs.id),
@@ -370,14 +397,20 @@ export class RichSurface {
       editor.refresh(saved?.anchor ?? at, at);
       editor.focus();
     };
+    label.onpointerdown = (e) => e.preventDefault();
     label.onclick = () => {
       const r = getRecord();
-      if (r) {
-        this.options.session.setSelection(
-          logical(r.node.mapping.from, r.node.mapping.from, owner()),
-        );
-        this.options.command("codeLanguage");
-      }
+      if (!r) return;
+      const s = editor.view.state.selection.main;
+      this.options.session.setSelection(
+        logical(
+          mapTextToSource(r.node.mapping, s.anchor),
+          mapTextToSource(r.node.mapping, s.head),
+          owner(),
+        ),
+      );
+      if (node.attrs.kind === "code") this.options.command("codeLanguage");
+      else editor.focus();
     };
     label.onkeydown = (e) => {
       if (e.key === "Enter") {
@@ -394,12 +427,13 @@ export class RichSurface {
         if (next.type !== node.type || next.attrs.id !== node.attrs.id)
           return false;
         node = next;
-        if (node.attrs.kind === "math" && !this.composing)
-          preview.innerHTML = mathHTML(String(node.attrs.text), true);
+        updateLabel();
+        math?.update();
         editor.refresh();
         return true;
       },
       destroy: () => {
+        math?.destroy();
         this.literals.delete(id);
         editor.destroy();
       },
@@ -418,7 +452,41 @@ export class RichSurface {
       !this.view.dom.contains(dom.focusNode)
     )
       return;
-    if (dom.anchorNode.parentElement?.closest(".literal")) return;
+    const literalDOM = (node: globalThis.Node): Element | null =>
+      (node.nodeType === 1 ? (node as Element) : node.parentElement)?.closest(
+        ".literal",
+      ) ?? null;
+    const aLiteral = literalDOM(dom.anchorNode),
+      hLiteral = literalDOM(dom.focusNode);
+    if (aLiteral && aLiteral === hLiteral) return;
+    if (aLiteral || hLiteral) {
+      const a = this.view.posAtDOM(dom.anchorNode, dom.anchorOffset),
+        h = this.view.posAtDOM(dom.focusNode, dom.focusOffset),
+        forward = a < h;
+      const record = (element: Element | null) =>
+        [...this.projection.records.values()].find(
+          (r) => element && this.view.nodeDOM(r.pos) === element,
+        );
+      const ar = record(aLiteral),
+        hr = record(hLiteral);
+      this.options.session.setSelection(
+        this.selectionAt(
+          ar
+            ? forward
+              ? ar.node.from
+              : ar.node.to
+            : this.projection.sourceAt(a),
+          hr
+            ? forward
+              ? hr.node.to
+              : hr.node.from
+            : this.projection.sourceAt(h),
+        ),
+      );
+      this.refresh();
+      this.view.focus();
+      return;
+    }
     const anchor = this.view.posAtDOM(dom.anchorNode, dom.anchorOffset),
       head = this.view.posAtDOM(dom.focusNode, dom.focusOffset),
       current = this.options.session.selection;
@@ -663,7 +731,10 @@ export class RichSurface {
         column: c.column,
       });
     }
-    return logical(anchor, head);
+    return expandLiteralSelection(
+      this.options.session.source,
+      logical(anchor, head),
+    );
   }
   private clipboard(event: ClipboardEvent, cut: boolean): boolean {
     if (this.composing || !event.clipboardData) return false;
@@ -727,7 +798,8 @@ export class RichSurface {
     const s = this.options.session.selection;
     if (s.owner.kind === "code" || s.owner.kind === "math") {
       const r = this.projection.literalAt(s.head.offset, s.owner.kind);
-      if (r) this.literals.get(r.id)?.copy(mode);
+      if (r && !this.literals.get(r.id)?.copy(mode))
+        this.options.notice("拷贝未完成，请使用系统拷贝快捷键");
       return;
     }
     this.copyMode = mode;
@@ -851,7 +923,7 @@ export class RichSurface {
         ? neighbor.node.mapping.to
         : neighbor.node.mapping.from
       : this.projection.sourceAt(target, backward ? "before" : "after");
-    const anchor = extend ? this.options.session.selection.anchor.offset : at;
+    const anchor = extend ? (backward ? to : from) : at;
     this.options.session.setSelection(
       logical(
         anchor,
@@ -875,10 +947,16 @@ export class RichSurface {
     dom.tabIndex = 0;
     dom.setAttribute("role", "button");
     dom.setAttribute("aria-label", "编辑行内公式");
-    const render = () => {
-      dom.innerHTML = mathHTML(String(node.attrs.text));
-    };
-    render();
+    const math = new LiveMath(dom, () => {
+      const r = this.projection.records.get(String(node.attrs.id));
+      return r
+        ? {
+            key: r.id,
+            text: String(node.attrs.text),
+            revision: this.options.session.revision,
+          }
+        : null;
+    });
     const open = () => {
       const r = this.projection.records.get(String(node.attrs.id));
       if (r) {
@@ -897,13 +975,14 @@ export class RichSurface {
     };
     return {
       dom,
+      destroy: () => math.destroy(),
       stopEvent: () => true,
       ignoreMutation: () => true,
       update: (next) => {
         if (next.type !== node.type || next.attrs.id !== node.attrs.id)
           return false;
         node = next;
-        render();
+        math.update();
         return true;
       },
     };
@@ -972,6 +1051,12 @@ export class RichSurface {
         };
         this.options.session.setSelection(s);
       }
+      if (s.owner.kind === "source") s = { ...s, owner: { kind: "prose" } };
+      const safe = expandLiteralSelection(this.options.session.source, s);
+      if (safe !== this.options.session.selection) {
+        s = safe;
+        this.options.session.setSelection(s);
+      }
       if (
         literal &&
         (s.owner.kind === "code" || s.owner.kind === "math") &&
@@ -1018,6 +1103,17 @@ export class RichSurface {
       );
       if (literal && (s.owner.kind === "code" || s.owner.kind === "math"))
         this.literals.get(literal.id)?.refresh(s.anchor.offset, s.head.offset);
+      const a = Math.min(s.anchor.offset, s.head.offset),
+        b = Math.max(s.anchor.offset, s.head.offset);
+      for (const r of this.projection.records.values())
+        if (["code", "math"].includes(r.node.type))
+          (this.view.nodeDOM(r.pos) as HTMLElement | null)?.classList.toggle(
+            "selected-literal",
+            s.owner.kind === "prose" &&
+              a !== b &&
+              a <= r.node.from &&
+              b >= r.node.to,
+          );
     } finally {
       this.rendering = false;
     }

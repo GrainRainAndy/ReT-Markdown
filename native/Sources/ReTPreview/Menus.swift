@@ -30,7 +30,7 @@ import AppKit
   command(edit, "撤销", "undo", "z"); command(edit, "重做", "redo", "z", [.command,.shift])
   edit.addItem(.separator())
   item(edit, "剪切", #selector(NSText.cut(_:)), "x"); item(edit, "拷贝", #selector(NSText.copy(_:)), "c")
-  item(edit, "粘贴", #selector(NSText.paste(_:)), "v"); item(edit, "全选", #selector(NSText.selectAll(_:)), "a")
+  item(edit, "粘贴", #selector(NSText.paste(_:)), "v"); command(edit, "粘贴图片", "pasteImage"); item(edit, "全选", #selector(NSText.selectAll(_:)), "a")
   command(edit, "拷贝 Markdown", "copyMarkdown"); command(edit, "拷贝纯文本", "copyPlain"); command(edit, "拷贝富文本", "copyRich")
   edit.addItem(.separator()); command(edit, "查找", "find", "f"); command(edit, "替换", "replace", "f", [.command,.option])
   let format = menu("格式")

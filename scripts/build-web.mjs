@@ -7,7 +7,6 @@ await cp("node_modules/katex/dist/fonts", "dist/web/fonts", {
 });
 await copyFile("node_modules/katex/dist/katex.min.css", "dist/web/katex.css");
 const options = {
-  entryPoints: ["editor/main.ts"],
   bundle: true,
   outdir: "dist/web",
   format: "iife",
@@ -15,9 +14,27 @@ const options = {
   loader: { ".woff2": "file", ".woff": "file", ".ttf": "file" },
   sourcemap: true,
 };
+const mainOptions = { ...options, entryPoints: { main: "editor/main.ts" } };
+// Micromark's decoder provides a DOM-free conditional export for workers.
+const workerOptions = {
+  ...options,
+  entryPoints: { "render-worker": "editor/render/worker.ts" },
+  conditions: ["worker"],
+};
 if (process.argv.includes("--serve")) {
-  const ctx = await context(options);
-  await ctx.watch();
-  await ctx.serve({ host: "127.0.0.1", port: 4173, servedir: "dist/web" });
+  const contexts = await Promise.all([
+    context(mainOptions),
+    context(workerOptions),
+  ]);
+  await Promise.all(contexts.map((ctx) => ctx.rebuild()));
+  await Promise.all(contexts.map((ctx) => ctx.watch()));
+  await contexts[0].serve({
+    host: "127.0.0.1",
+    port: 4173,
+    servedir: "dist/web",
+  });
   console.log("ReT development http://127.0.0.1:4173");
-} else await build(options);
+} else {
+  await build(mainOptions);
+  await build(workerOptions);
+}

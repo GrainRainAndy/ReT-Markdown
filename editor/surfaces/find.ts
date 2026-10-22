@@ -7,6 +7,7 @@ export class FindPanel {
   private replacement: HTMLInputElement;
   private count: HTMLElement;
   private replaceRow: HTMLElement;
+  private caseSensitive: HTMLInputElement;
   constructor(
     parent: HTMLElement,
     private session: () => DocumentSession,
@@ -18,12 +19,14 @@ export class FindPanel {
     this.dom.hidden = true;
     this.dom.setAttribute("aria-label", "查找替换");
     this.dom.innerHTML =
-      '<label>查找<input aria-label="查找内容" autocomplete="off"></label><span aria-label="匹配数量"></span><button data-action="previous" title="上一个（Shift+Enter）">上一个</button><button data-action="next" title="下一个（Enter）">下一个</button><button data-action="close" aria-label="关闭查找">×</button><div class="replace-row"><label>替换<input aria-label="替换为" autocomplete="off"></label><button data-action="one">替换当前</button><button data-action="all">全部替换</button></div>';
+      '<label>查找<input aria-label="查找内容" autocomplete="off"></label><label><input type="checkbox" aria-label="区分大小写" checked>区分大小写</label><span aria-label="匹配数量"></span><button data-action="previous" title="上一个（Shift+Enter）">上一个</button><button data-action="next" title="下一个（Enter）">下一个</button><button data-action="close" aria-label="关闭查找">×</button><div class="replace-row"><label>替换<input aria-label="替换为" autocomplete="off"></label><button data-action="one">替换当前</button><button data-action="all">全部替换</button></div>';
     parent.prepend(this.dom);
     this.query = this.dom.querySelector('[aria-label="查找内容"]')!;
     this.replacement = this.dom.querySelector('[aria-label="替换为"]')!;
     this.count = this.dom.querySelector('[aria-label="匹配数量"]')!;
     this.replaceRow = this.dom.querySelector(".replace-row")!;
+    this.caseSensitive = this.dom.querySelector('[aria-label="区分大小写"]')!;
+    this.caseSensitive.onchange = () => this.update();
     this.query.oninput = () => this.update();
     this.dom.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
@@ -56,19 +59,19 @@ export class FindPanel {
   update(): void {
     this.count.textContent = `${this.matches().length} 处匹配`;
   }
-  private matches(): number[] {
+  private matches(): { from: number; to: number }[] {
     const text = this.session().source,
       q = this.query.value;
     if (!q) return [];
-    const results: number[] = [];
-    let from = 0;
-    while (from <= text.length) {
-      const index = text.indexOf(q, from);
-      if (index < 0) break;
-      results.push(index);
-      from = index + q.length;
-    }
-    return results;
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(
+      escaped,
+      this.caseSensitive.checked ? "gu" : "giu",
+    );
+    return [...text.matchAll(pattern)].map((match) => ({
+      from: match.index,
+      to: match.index + match[0].length,
+    }));
   }
   private next(direction: number): void {
     const positions = this.matches();
@@ -80,11 +83,10 @@ export class FindPanel {
         : Math.min(selection.anchor.offset, selection.head.offset);
     const index =
       direction > 0
-        ? (positions.find((p) => p >= at) ?? positions[0]!)
-        : ([...positions].reverse().find((p) => p < at) ?? positions.at(-1)!);
-    this.reveal(
-      logical(index, index + this.query.value.length, { kind: "source" }),
-    );
+        ? (positions.find((p) => p.from >= at) ?? positions[0]!)
+        : ([...positions].reverse().find((p) => p.from < at) ??
+          positions.at(-1)!);
+    this.reveal(logical(index.from, index.to, { kind: "source" }));
     this.query.focus();
   }
   private replace(all: boolean): void {
@@ -93,13 +95,18 @@ export class FindPanel {
     const s = this.session().selection;
     const selected = all
       ? matches
-      : matches.includes(Math.min(s.anchor.offset, s.head.offset)) &&
-          Math.abs(s.head.offset - s.anchor.offset) === this.query.value.length
-        ? [Math.min(s.anchor.offset, s.head.offset)]
-        : [matches.find((p) => p >= s.head.offset) ?? matches[0]!];
-    const patches = selected.map((from) => ({
+      : [
+          matches.find(
+            (p) =>
+              p.from === Math.min(s.anchor.offset, s.head.offset) &&
+              p.to === Math.max(s.anchor.offset, s.head.offset),
+          ) ??
+            matches.find((p) => p.from >= s.head.offset) ??
+            matches[0]!,
+        ];
+    const patches = selected.map(({ from, to }) => ({
       from,
-      to: from + this.query.value.length,
+      to,
       insert: this.replacement.value,
     }));
     const at = patches[0]!.from + this.replacement.value.length;

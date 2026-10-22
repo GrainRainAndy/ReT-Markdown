@@ -28,6 +28,7 @@ export interface LiteralOptions {
 export class LiteralEditor {
   readonly view: EditorView;
   private updating = false;
+  private clipboardFailed = false;
   private copyMode: "markdown" | "plain" | "rich" | null = null;
   private composing = false;
   private baseline: string;
@@ -135,7 +136,7 @@ export class LiteralEditor {
                         : "<pre><code>" + escapeHTML(text) + "</code></pre>",
                     );
                 } catch {
-                  /* A blocked clipboard must leave the document unchanged. */
+                  this.clipboardFailed = true;
                 }
                 return true;
               },
@@ -281,10 +282,11 @@ export class LiteralEditor {
   }
   copy(mode: "markdown" | "plain" | "rich"): boolean {
     this.copyMode = mode;
+    this.clipboardFailed = false;
     this.view.focus();
     const copied = document.execCommand("copy");
     this.copyMode = null;
-    return copied;
+    return copied && !this.clipboardFailed;
   }
   focus(): void {
     this.view.focus();

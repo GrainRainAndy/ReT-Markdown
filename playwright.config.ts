@@ -1,4 +1,6 @@
 import { defineConfig } from "@playwright/test";
+// Playwright sets FORCE_COLOR in worker children; avoid inherited conflicting NO_COLOR.
+delete process.env.NO_COLOR;
 export default defineConfig({
   testDir: "tests/browser",
   fullyParallel: false,

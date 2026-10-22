@@ -1,7 +1,11 @@
 import { it, expect } from "vitest";
 import { DocumentSession } from "../../editor/core/document";
 import { logical } from "../../editor/surfaces/editing";
-import { indentIntent, literalPatch } from "../../editor/surfaces/commands";
+import {
+  indentIntent,
+  literalPatch,
+  expandLiteralSelection,
+} from "../../editor/surfaces/commands";
 import { RichProjection } from "../../editor/surfaces/projection";
 import { recoverProseSource } from "../../editor/surfaces/recovery";
 import { schema } from "../../editor/surfaces/projection";
@@ -106,4 +110,22 @@ it("deletes displayed entities and escapes as whole semantic graphemes", () => {
   expect(p.deletionRange(1, false)).toEqual({ from: 1, to: 6 });
   expect(p.deletionRange(6, true)).toEqual({ from: 1, to: 6 });
   expect(p.deletionRange(9, true)).toEqual({ from: 7, to: 9 });
+});
+it("expands rich cross-literal selections in both directions but leaves literal/source ranges exact", () => {
+  const source = "before\n\n~~~\nx\n~~~\n\nafter";
+  expect(expandLiteralSelection(source, logical(14, 19))).toEqual(
+    logical(8, 19),
+  );
+  expect(expandLiteralSelection(source, logical(12, 6))).toEqual(
+    logical(17, 6),
+  );
+  expect(
+    expandLiteralSelection(source, logical(12, 14, { kind: "source" })),
+  ).toEqual(logical(12, 14, { kind: "source" }));
+  expect(
+    expandLiteralSelection(
+      source,
+      logical(12, 14, { kind: "code", nodeId: "c" }),
+    ),
+  ).toEqual(logical(12, 14, { kind: "code", nodeId: "c" }));
 });
