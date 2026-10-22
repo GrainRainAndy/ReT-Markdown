@@ -90,6 +90,23 @@ export class LiteralEditor {
           Prec.highest(
             EditorView.domEventHandlers({
               keydown: (event) => options.key?.(event) ?? false,
+              drop: (event, view) => {
+                if (this.composing || !options.markdown || !options.image)
+                  return false;
+                const file = [...(event.dataTransfer?.files ?? [])].find((f) =>
+                  f.type.startsWith("image/"),
+                );
+                if (!file) return false;
+                event.preventDefault();
+                const at =
+                  view.posAtCoords({ x: event.clientX, y: event.clientY }) ??
+                  view.state.selection.main.head;
+                view.dispatch({ selection: { anchor: at } });
+                const sourceAt = mapTextToSource(options.range().mapping, at);
+                options.select(sourceAt, sourceAt);
+                options.image(file);
+                return true;
+              },
               paste: (event, view) => {
                 if (this.composing) return false;
                 const data = event.clipboardData;

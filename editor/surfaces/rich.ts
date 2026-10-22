@@ -103,6 +103,24 @@ export class RichSurface {
         }
         return false;
       },
+      handleDrop: (view, event) => {
+        if (this.composing) return false;
+        const file = [...(event.dataTransfer?.files ?? [])].find((f) =>
+          f.type.startsWith("image/"),
+        );
+        if (!file || !this.options.image) return false;
+        event.preventDefault();
+        const position = view.posAtCoords({
+          left: event.clientX,
+          top: event.clientY,
+        })?.pos;
+        if (position !== undefined) {
+          const offset = this.projection.sourceAt(position);
+          this.options.session.setSelection(logical(offset));
+        } else this.captureSelection();
+        this.options.image(file);
+        return true;
+      },
       handleDOMEvents: {
         copy: (_, event) => this.clipboard(event as ClipboardEvent, false),
         cut: (_, event) => this.clipboard(event as ClipboardEvent, true),
@@ -997,10 +1015,10 @@ export class RichSurface {
       img.src = url;
       img.alt = String(node.attrs.alt);
       img.onerror = () => {
-        dom.textContent = "[图片不可用：" + img.alt + "]";
+        dom.textContent = "[图片不可用：" + node.attrs.url + "]";
       };
       dom.append(img);
-    } else dom.textContent = "[图片：" + node.attrs.alt + "]";
+    } else dom.textContent = "[图片：" + node.attrs.url + "]";
     return { dom, ignoreMutation: () => true };
   }
   refresh(patch?: Patch | readonly Patch[]): void {

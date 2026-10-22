@@ -16,6 +16,8 @@ import WebKit
  private var invalidated = false
  private var pending: [String: (Result<Snapshot, Error>) -> Void] = [:]
  private var seen = Set<String>()
+ private var assetRequests: [String: (Snapshot, (Result<[String], Error>) -> Void)] = [:]
+ var onSessionInvalidated: (() -> Void)?
  var onImportImage: ((BridgeEnvelope) -> Void)?
  var onExportContent: ((BridgeEnvelope) -> Void)?
  var onExportPDF: (() -> Void)?
@@ -23,6 +25,7 @@ import WebKit
   self.document = document; self.entryURL = entryURL
   let configuration = WKWebViewConfiguration()
   configuration.websiteDataStore = .nonPersistent()
+  Self.installBundledWorker(in: configuration, entryURL: entryURL)
   configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
   configuration.setURLSchemeHandler(assetScheme, forURLScheme: "ret-asset")
   webView = WKWebView(frame: .zero, configuration: configuration)
@@ -31,6 +34,15 @@ import WebKit
   webView.navigationDelegate = self
   webView.underPageBackgroundColor = .textBackgroundColor
   webView.loadFileURL(entryURL, allowingReadAccessTo: entryURL.deletingLastPathComponent())
+ }
+ /// WKWebView rejects file:// worker scripts. Inject only this app's bundled classic
+ /// worker bytes; Blob workers retain termination/deadline isolation without network.
+ static func installBundledWorker(in configuration: WKWebViewConfiguration, entryURL: URL) {
+  let url = entryURL.deletingLastPathComponent().appendingPathComponent("render-worker.js")
+  guard let source = try? String(contentsOf: url, encoding: .utf8),
+   let json = try? JSONSerialization.data(withJSONObject: [source]),
+   let literal = String(data: json, encoding: .utf8) else { return }
+  configuration.userContentController.addUserScript(WKUserScript(source: "Object.defineProperty(window,'retRenderWorkerSource',{value:(\(literal))[0]});", injectionTime: .atDocumentStart, forMainFrameOnly: true))
  }
  func send(_ method: String, payload: [String: Any], requestID: String = UUID().uuidString) {
   guard !invalidated, let document else { return }
@@ -55,8 +67,23 @@ import WebKit
    self?.pending.removeValue(forKey: id)?(.failure(HostFailure.unavailable("编辑器未响应保存屏障。请重试；未确认保存成功。")))
   }
  }
+ func collectAssets(for snapshot: Snapshot, completion: @escaping (Result<[String], Error>) -> Void) {
+  guard ready, !invalidated else { completion(.failure(HostFailure.unavailable("编辑器尚未就绪。"))); return }
+  let id = UUID().uuidString
+  assetRequests[id] = (snapshot, completion)
+  send("collectAssets", payload: ["source":snapshot.source,"revision":snapshot.revision], requestID:id)
+  DispatchQueue.main.asyncAfter(deadline:.now() + 10) { [weak self] in
+   self?.assetRequests.removeValue(forKey:id)?.1(.failure(HostFailure.unavailable("图片清单准备超时。")))
+  }
+ }
+ private func cancelServices() {
+  onSessionInvalidated?()
+  let requests = assetRequests.values; assetRequests.removeAll()
+  for (_,completion) in requests { completion(.failure(HostFailure.stale)) }
+ }
  func invalidate() {
   invalidated = true; ready = false
+  cancelServices()
   let callbacks = pending.values; pending.removeAll()
   for callback in callbacks { callback(.failure(HostFailure.unavailable("文稿会话已关闭。"))) }
   webView.configuration.userContentController.removeScriptMessageHandler(forName: "ret")
@@ -66,6 +93,11 @@ import WebKit
   guard !invalidated, let document else { return }
   let trusted = message.frameInfo.isMainFrame && message.frameInfo.request.url?.standardizedFileURL == entryURL.standardizedFileURL
   guard let envelope = BridgeEnvelope.parse(message.body, trusted: trusted, documentID: document.state.documentID, epoch: document.state.epoch) else { return }
+  if envelope.method == "assetManifest" {
+   guard let (snapshot, callback) = assetRequests.removeValue(forKey:envelope.requestID) else { return }
+   guard BridgeEnvelope.integer(envelope.payload["revision"]) == snapshot.revision else { callback(.failure(HostFailure.stale)); return }
+   callback(.success(envelope.payload["paths"] as! [String])); return
+  }
   if envelope.method == "flushResult" {
    guard let callback = pending.removeValue(forKey: envelope.requestID) else { return }
    if envelope.payload["status"] as? String == "pending" { callback(.failure(HostFailure.pending(envelope.payload["reason"] as? String ?? "pending"))); return }
@@ -111,6 +143,7 @@ import WebKit
  }
  func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
   ready = false
+  cancelServices()
   let callbacks = pending.values; pending.removeAll()
   for callback in callbacks { callback(.failure(HostFailure.unavailable("编辑进程已退出；请重新打开恢复副本。"))) }
   document?.report(HostFailure.unavailable("编辑进程已退出，正在恢复宿主已收到的源文与草稿。尚未发送到宿主的输入可能丢失。"), operation: "renderer", sendToWeb: false)

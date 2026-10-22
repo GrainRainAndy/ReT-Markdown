@@ -11,7 +11,13 @@ import {
   type Intent,
 } from "./surfaces/editing";
 import { mapText } from "./syntax/mapping";
-import { renderSourceDocument, assetURL } from "./render/document";
+import {
+  renderSourceDocument,
+  assetURL,
+  collectAssetReferences,
+  setAssetCapability,
+  getAssetCapability,
+} from "./render/document";
 import {
   headingIntent,
   markIntent,
@@ -286,6 +292,9 @@ function load(payload: Record<string, unknown>): void {
     notice("当前输入尚未提交，拒绝替换文稿");
     return;
   }
+  setAssetCapability(
+    typeof payload.assetToken === "string" ? payload.assetToken : "document",
+  );
   unsubscribe?.();
   exportRequest?.abort.abort();
   exportRequest = undefined;
@@ -382,7 +391,7 @@ function receive(message: Envelope): void {
         break;
       }
       const path = typeof p.relativePath === "string" ? p.relativePath : "";
-      if (!assetURL(path)) {
+      if (!assetURL(path.split("/").map(encodeURIComponent).join("/"))) {
         notice("图片路径无效");
         break;
       }
@@ -401,6 +410,15 @@ function receive(message: Envelope): void {
     case "error":
       notice(String(p.message ?? "操作失败"));
       break;
+    case "collectAssets": {
+      if (typeof p.source === "string" && typeof p.revision === "number")
+        host.send(
+          "assetManifest",
+          { paths: collectAssetReferences(p.source), revision: p.revision },
+          message.requestId,
+        );
+      break;
+    }
     case "prepareExport": {
       const source = typeof p.source === "string" ? p.source : session.source;
       const frozen = typeof p.revision === "number" ? p.revision : revision();
@@ -413,7 +431,10 @@ function receive(message: Envelope): void {
       };
       exportRequest = request;
       void renderer
-        .run({ kind: "document", source }, request.abort.signal)
+        .run(
+          { kind: "document", source, assetToken: getAssetCapability() },
+          request.abort.signal,
+        )
         .then((result) => {
           if (
             exportRequest !== request ||

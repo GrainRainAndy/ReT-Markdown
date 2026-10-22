@@ -11,7 +11,7 @@ scope.onmessage = ({ data: { id, job } }) => {
       id,
       html:
         job.kind === "document"
-          ? renderDocument(job.source, renderMath)
+          ? renderDocument(job.source, renderMath, job.assetToken)
           : renderMath(job.text, job.displayMode),
     });
   } catch {

@@ -10,7 +10,12 @@ import AppKit
  private var diskBytes: Data?
  private var saveActive = false
  private var saveQueue: [() -> Void] = []
- private var closed = false
+ var closed = false
+ var serviceGeneration = 0
+ var assetStore: AssetStore?
+ var assetTransaction: AssetStore.Transaction?
+ var pdfExport: PDFExportController?
+ var assetDirectory: URL { recovery.directory.deletingLastPathComponent().appendingPathComponent("Assets", isDirectory:true) }
  private var closeActive = false
  private var closeSaveCompletion: ((Bool) -> Void)?
  private var externalCheckActive = false
@@ -52,10 +57,13 @@ import AppKit
   }
   let editor = EditorHost(document: self, entryURL: entry)
   host = editor
+  installAssetServices(editor)
   window.contentView = editor.webView
  }
  override func read(from data: Data, ofType typeName: String) throws {
   let source = try UTF8File.decode(data)
+  serviceGeneration += 1
+  if pdfExport != nil { MainActor.assumeIsolated { pdfExport?.cancel() } }
   state = DocumentState(documentID: state.documentID, source: source)
   diskBytes = data
  }
@@ -75,10 +83,11 @@ import AppKit
  }
  var loadPayload: [String: Any] {
   var payload: [String: Any] = ["source":state.received.source,"savedSource":state.saved.source,"revision":state.received.revision,"displayName":displayName ?? "Untitled","fileURL":fileURL?.absoluteString as Any? ?? NSNull(),"appearance":"system"]
+  if let assetStore { payload["assetToken"] = assetStore.token }
   if let draft = state.recoveryDraft { payload["recoveryDraft"] = draft.payload }
   return payload
  }
- func rendererWillRestart() { state.epoch = UUID().uuidString }
+ func rendererWillRestart() { serviceGeneration += 1; state.epoch = UUID().uuidString }
  private func synchronizeDirty() {
   updateChangeCount(.changeCleared)
   if state.isDirty || state.recoveryDraft != nil { updateChangeCount(.changeDone) }
@@ -98,6 +107,9 @@ import AppKit
  func restore(_ record: RecoveryRecord) {
   // Recovery always opens as an untitled copy, preserving the external file unconditionally.
   state = DocumentState(source: "")
+  assetStore = nil
+  do { try assets().recover(from:record.documentID,originalURL:record.fileURL) }
+  catch { report(error,operation:"assetRecovery") }
   state.received = record.snapshot
   _ = state.receiveDraft(record.recoveryDraft)
   displayName = "恢复副本 — \(record.fileURL?.lastPathComponent ?? "未命名")"
@@ -133,6 +145,7 @@ import AppKit
    let commit: (Result<Void, Error>) -> Void = { [weak self] result in
     guard !prepared, !finished else { return }; prepared = true
     guard let self else { return }
+    guard !self.closed else { finish(CocoaError(.userCancelled)); return }
     switch result {
     case .failure(let error): finish(error)
     case .success:
@@ -223,7 +236,7 @@ import AppKit
   callback?(didSave && !state.isDirty && state.recoveryDraft == nil)
  }
  override func close() {
-  closed = true; host?.invalidate(); host = nil
+  closed = true; serviceGeneration += 1; pdfExport?.cancel(); host?.invalidate(); host = nil
   let id = state.documentID, store = recovery
   recoveryQueue.async { store.remove(documentID: id) }
   super.close()

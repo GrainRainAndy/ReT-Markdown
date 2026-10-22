@@ -36,6 +36,11 @@ final class DocumentTestEnvironment {
     XCTAssertFalse(FileManager.default.fileExists(atPath: path.path), "Test recovery ID leaked into the production store: \(id)")
    }
   }
+  let productionAssets = RecoveryStore.applicationStore.directory.deletingLastPathComponent().appendingPathComponent("Assets")
+  for id in documentIDs {
+   XCTAssertFalse(FileManager.default.fileExists(atPath:productionAssets.appendingPathComponent(id + ".json").path),"Test asset journal leaked into production")
+   XCTAssertFalse(FileManager.default.fileExists(atPath:productionAssets.appendingPathComponent(id).path),"Test draft assets leaked into production")
+  }
   try FileManager.default.removeItem(at: root)
  }
 }

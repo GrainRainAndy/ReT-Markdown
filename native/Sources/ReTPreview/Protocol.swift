@@ -33,6 +33,8 @@ struct BridgeEnvelope {
    if let source = payload["source"] { guard let value = source as? String, value == "clipboard", payload["dataURL"] == nil else { return nil } }
    if let data = payload["dataURL"] { guard let text = data as? String, text.utf8.count <= 40 * 1024 * 1024 else { return nil } }
    if let name = payload["fileName"] { guard let text = name as? String, text.utf8.count <= 1024 else { return nil } }
+  case "assetManifest":
+   guard Set(payload.keys) == ["paths", "revision"], let paths = payload["paths"] as? [String], paths.count <= 10000, paths.allSatisfy({$0.utf8.count <= 8192}), integer(payload["revision"]) != nil else { return nil }
   case "exportContent": guard let html = payload["html"] as? String, html.utf8.count <= 64 * 1024 * 1024, integer(payload["revision"]) != nil else { return nil }
   default: return nil
   }

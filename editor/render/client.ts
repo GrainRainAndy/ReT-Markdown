@@ -1,6 +1,6 @@
 export type RenderJob =
   | { kind: "math"; text: string; displayMode: boolean }
-  | { kind: "document"; source: string };
+  | { kind: "document"; source: string; assetToken?: string };
 export type RenderResult =
   | { status: "ready"; html: string }
   | { status: "timeout" | "unavailable" | "error" | "cancelled" };
@@ -94,7 +94,17 @@ export class RenderService {
   }
 }
 function browserWorker(): WorkerPort {
-  const worker = new Worker(new URL("render-worker.js", document.baseURI));
+  const source = (window as unknown as { retRenderWorkerSource?: string })
+    .retRenderWorkerSource;
+  const blob = source
+    ? URL.createObjectURL(new Blob([source], { type: "text/javascript" }))
+    : undefined;
+  let worker: Worker;
+  try {
+    worker = new Worker(blob ?? new URL("render-worker.js", document.baseURI));
+  } finally {
+    if (blob) URL.revokeObjectURL(blob);
+  }
   const port: WorkerPort = {
     onmessage: null,
     onerror: null,

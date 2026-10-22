@@ -30,6 +30,16 @@ final class ProtocolTests: RecoveryIsolatedTestCase {
   XCTAssertNil(parse(["source":"picker"]))
   XCTAssertNil(parse(["source":1]))
  }
+ func testAssetManifestRequiresBoundedPathsAndFrozenIntegerRevision() {
+  func parse(_ payload: [String:Any]) -> BridgeEnvelope? {
+   BridgeEnvelope.parse(["v":1,"documentId":"doc","epoch":"epoch","requestId":"manifest","method":"assetManifest","payload":payload],trusted:true,documentID:"doc",epoch:"epoch")
+  }
+  XCTAssertNotNil(parse(["paths":["图%20片.svg"],"revision":4]))
+  XCTAssertNil(parse(["paths":[42],"revision":4]))
+  XCTAssertNil(parse(["paths":["safe.svg"],"revision":true]))
+  XCTAssertNil(parse(["paths":[String(repeating:"x",count:8193)],"revision":4]))
+  XCTAssertNil(parse(["paths":["safe.svg"],"revision":4,"root":"/etc"]))
+ }
  func testByteDifferentUnicodeRemainsDirty() {
   var state = DocumentState(documentID: "d", epoch: "e", source: "\u{E9}")
   _ = state.receive(Snapshot(source: "e\u{301}", revision: 1), documentID: "d", epoch: "e")

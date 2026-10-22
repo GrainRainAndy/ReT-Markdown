@@ -9,6 +9,7 @@ swift build --package-path native -c release
 BIN_DIR="$(swift build --package-path native -c release --show-bin-path)"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/web"
 cp "$BIN_DIR/ReTPreview" "$APP/Contents/MacOS/ReTPreview"
+cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 # Only the isolated preview bundle is regenerated; historical output is never touched.
 rsync -a --delete "$ROOT/dist/web/" "$APP/Contents/Resources/web/"
 cat > "$APP/Contents/Info.plist" <<'PLIST'

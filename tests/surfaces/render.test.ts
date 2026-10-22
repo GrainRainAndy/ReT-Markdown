@@ -34,3 +34,25 @@ it("main-thread rendering keeps source math and source-only fallback escapes fro
   expect(fallback).toContain("&lt;script&gt;frozen&lt;/script&gt;");
   expect(fallback).not.toContain("<script>");
 });
+
+it("collects only image destinations for the frozen source including reference images", async () => {
+  const { collectAssetReferences } =
+    await import("../../editor/render/document");
+  expect(
+    collectAssetReferences(
+      "![a](x%20y.svg)\n\n![b][ref]\n\n[ref]: managed/z.png\n\n[link](ignore.png)\n\n`![code](ignore2.png)`",
+    ),
+  ).toEqual(["x%20y.svg", "managed/z.png"]);
+});
+it("renders missing and remote image placeholders with their readable path and capability URLs", () => {
+  const html = renderDocument(
+    "![alt](missing.svg)\n\n![remote](https://example.com/图.png)",
+    undefined,
+    "capability-test",
+  );
+  expect(html).toContain("ret-asset://capability-test/missing.svg");
+  expect(html).toContain('data-asset-path="missing.svg"');
+  expect(html).toContain("https://example.com/图.png");
+  expect(html).not.toContain('<img src="https:');
+  expect(html).not.toContain("overflow:hidden");
+});
