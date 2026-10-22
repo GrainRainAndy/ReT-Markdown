@@ -313,18 +313,19 @@ import AppKit
     guard let self, let host, !self.closed else { return }
     switch result {
     case .failure(let error): self.report(error,operation:"reload")
-    case .success:
+    case .success(let token):
+     guard host.hasReloadBarrier(for:token) else { return }
      self.preserveBeforeReload { [weak self, weak host] preservation in
-      guard let self, let host, !self.closed, host.hasReloadBarrier else { return }
+      guard let self, let host, !self.closed, host.hasReloadBarrier(for:token) else { return }
       do {
        try preservation.get()
        guard try Data(contentsOf:url) == bytes else { throw HostFailure.externalConflict }
        self.serviceGeneration += 1; self.pdfExport?.cancel()
        self.state = candidate; self.diskBytes = bytes
        self.synchronizeDirty()
-       host.commitReload()
+       host.commitReload(token)
        self.persistRecovery(self.state.received)
-      } catch { host.cancelReload(); self.report(error,operation:"reload") }
+      } catch { host.cancelReload(token); self.report(error,operation:"reload") }
      }
     }
    }

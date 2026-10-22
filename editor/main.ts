@@ -168,8 +168,36 @@ function notice(text: string): void {
 function revision(): number {
   return baseline + session.revision;
 }
+// These commands operate on the document/window, not a text selection. Modal
+// dialogs still own interaction exclusively; editing commands require live focus.
+const globalCommands = new Set([
+  "save",
+  "saveAs",
+  "open",
+  "new",
+  "exportPDF",
+  "find",
+  "replace",
+  "toggleSource",
+  "zoomIn",
+  "zoomOut",
+  "zoomReset",
+]);
+function markdownOwnsFocus(): boolean {
+  const active = document.activeElement;
+  return (
+    active instanceof HTMLElement &&
+    workspace.contains(active) &&
+    !!active.closest(".ProseMirror, .cm-content")
+  );
+}
+function commandOwnsFocus(id: string): boolean {
+  if (document.querySelector("dialog[open]")) return false;
+  return globalCommands.has(id) || markdownOwnsFocus();
+}
 function commandEnabled(id: string): boolean {
-  if (host.replacing || composing || draft) return false;
+  if (host.replacing || composing || draft || !commandOwnsFocus(id))
+    return false;
   if (id === "undo") return session.canUndo || imageRequests.size > 0;
   if (id === "redo") return session.canRedo;
   const at = session.selection.head.offset,
@@ -289,6 +317,7 @@ function refresh(patch?: Patch | readonly Patch[]): void {
   updateStatus();
 }
 function mount(focus = false): void {
+  focus ||= markdownOwnsFocus();
   mountGeneration++;
   rich?.destroy();
   rich = undefined;
@@ -382,7 +411,7 @@ function load(payload: Record<string, unknown>): void {
     }
     updateStatus();
   });
-  mount();
+  mount(!draft);
   showRecovery();
 }
 function appearance(mode: string): void {
@@ -527,7 +556,7 @@ function receive(message: Envelope): void {
   }
 }
 function execute(id: string): void {
-  if (host.replacing) return;
+  if (host.replacing || !commandOwnsFocus(id)) return;
   if (id.startsWith("zoom")) {
     zoom =
       id === "zoomReset"
@@ -863,6 +892,8 @@ workspace.addEventListener("contextmenu", (event) => {
     button.setAttribute("role", "menuitem");
     button.onclick = () => {
       menu.remove();
+      if (mode === "rich") rich?.focus();
+      else literal?.focus();
       execute(action.id);
     };
     menu.append(button);
@@ -872,7 +903,8 @@ workspace.addEventListener("contextmenu", (event) => {
   menu.onkeydown = (e) => {
     if (e.key === "Escape") {
       menu.remove();
-      rich?.focus();
+      if (mode === "rich") rich?.focus();
+      else literal?.focus();
     }
   };
   document.addEventListener(
@@ -908,6 +940,11 @@ document.querySelector<HTMLButtonElement>("#recover-discard")!.onclick = () => {
   showRecovery();
   mount(true);
 };
+// Native menu state and direct command execution share actual DOM ownership.
+document.addEventListener("focusin", publishCommandState);
+document.addEventListener("focusout", () =>
+  queueMicrotask(publishCommandState),
+);
 document.addEventListener(
   "keydown",
   (event) => {
@@ -922,7 +959,7 @@ document.addEventListener(
         c.modifiers.includes("alt") === event.altKey,
     );
     const id = definition?.id;
-    if (id) {
+    if (id && commandOwnsFocus(id)) {
       event.preventDefault();
       event.stopImmediatePropagation();
       execute(id);

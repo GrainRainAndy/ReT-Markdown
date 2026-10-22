@@ -17,42 +17,46 @@ import WebKit
  private var invalidated = false
  private var pending: [String: (Result<Snapshot, Error>) -> Void] = [:]
  private var seen = Set<String>()
- private var reloadID: String?
+ struct ReloadToken: Equatable {
+  let requestID: String
+  let candidateEpoch: String
+ }
+ private(set) var reloadToken: ReloadToken?
  private var reloadPrepared = false
  private var reloadCommitted = false
- private var reloadCompletion: ((Result<Snapshot, Error>) -> Void)?
- func prepareReload(epoch: String, payload: [String:Any], completion: @escaping (Result<Snapshot, Error>) -> Void) {
-  guard ready, !invalidated, reloadID == nil else { completion(.failure(HostFailure.unavailable("编辑器不能开始重载。"))); return }
-  let id = UUID().uuidString
-  reloadID = id; reloadPrepared = false; reloadCommitted = false; reloadCompletion = completion
-  send("reloadPrepare", payload: ["epoch":epoch,"load":payload], requestID:id)
+ private var reloadCompletion: ((Result<ReloadToken, Error>) -> Void)?
+ func prepareReload(epoch: String, payload: [String:Any], completion: @escaping (Result<ReloadToken, Error>) -> Void) {
+  guard ready, !invalidated, reloadToken == nil else { completion(.failure(HostFailure.unavailable("编辑器不能开始重载。"))); return }
+  let token = ReloadToken(requestID:UUID().uuidString,candidateEpoch:epoch)
+  reloadToken = token; reloadPrepared = false; reloadCommitted = false; reloadCompletion = completion
+  send("reloadPrepare", payload: ["epoch":token.candidateEpoch,"load":payload], requestID:token.requestID)
   DispatchQueue.main.asyncAfter(deadline:.now() + 10) { [weak self] in
-   guard let self, self.reloadID == id, !self.reloadCommitted else { return }
-   self.cancelReload(error:HostFailure.unavailable("重载屏障超时；已保留原文稿。"))
+   self?.cancelReload(token, error:HostFailure.unavailable("重载屏障超时；已保留原文稿。"))
   }
  }
- var isReplacing: Bool { reloadID != nil }
- var hasReloadBarrier: Bool { reloadID != nil && reloadPrepared && !reloadCommitted }
- func cancelReload(error: Error = CocoaError(.userCancelled)) {
-  guard let id = reloadID, !reloadCommitted else { return }
-  send("reloadCancel", payload:[:], requestID:id)
-  reloadID = nil; reloadPrepared = false
+ var isReplacing: Bool { reloadToken != nil }
+ var hasReloadBarrier: Bool { reloadToken != nil && reloadPrepared && !reloadCommitted }
+ func hasReloadBarrier(for token: ReloadToken) -> Bool { reloadToken == token && reloadPrepared && !reloadCommitted && !invalidated }
+ func cancelReload(_ token: ReloadToken, error: Error = CocoaError(.userCancelled)) {
+  guard reloadToken == token, !reloadCommitted else { return }
+  send("reloadCancel", payload:[:], requestID:token.requestID)
+  reloadToken = nil; reloadPrepared = false
   let callback = reloadCompletion; reloadCompletion = nil; callback?(.failure(error))
  }
- func commitReload() {
-  guard let id = reloadID, reloadPrepared else { return }
+ func commitReload(_ token: ReloadToken) {
+  guard hasReloadBarrier(for:token), document?.state.epoch == token.candidateEpoch else { return }
   reloadCommitted = true
-  resendReloadCommit(id)
+  resendReloadCommit(token)
  }
- private func resendReloadCommit(_ id: String) {
-  guard !invalidated, reloadID == id, reloadCommitted else { return }
-  send("reloadCommit", payload:[:], requestID:id)
+ private func resendReloadCommit(_ token: ReloadToken) {
+  guard !invalidated, reloadToken == token, reloadCommitted, document?.state.epoch == token.candidateEpoch else { return }
+  send("reloadCommit", payload:[:], requestID:token.requestID)
   // A lost completion never unlocks old input or rolls the native epoch back.
-  DispatchQueue.main.asyncAfter(deadline:.now() + 1) { [weak self] in self?.resendReloadCommit(id) }
+  DispatchQueue.main.asyncAfter(deadline:.now() + 1) { [weak self] in self?.resendReloadCommit(token) }
  }
  private func invalidateReload() {
   let callback = reloadCompletion; reloadCompletion = nil
-  reloadID = nil; reloadPrepared = false; reloadCommitted = false
+  reloadToken = nil; reloadPrepared = false; reloadCommitted = false
   callback?(.failure(HostFailure.stale))
  }
  private var assetRequests: [String: (Snapshot, (Result<[String], Error>) -> Void)] = [:]
@@ -135,16 +139,16 @@ import WebKit
   let trusted = message.frameInfo.isMainFrame && message.frameInfo.request.url?.standardizedFileURL == entryURL.standardizedFileURL
   guard let envelope = BridgeEnvelope.parse(message.body, trusted: trusted, documentID: document.state.documentID, epoch: document.state.epoch) else { return }
   if envelope.method == "reloadReady" {
-   guard envelope.requestID == reloadID, !reloadPrepared, !reloadCommitted else { return }
-   guard envelope.payload["status"] as? String == "ready", document.state.recoveryDraft == nil else { cancelReload(error:HostFailure.pending("composition or recovery draft")); return }
+   guard let token = reloadToken, envelope.requestID == token.requestID, !reloadPrepared, !reloadCommitted else { return }
+   guard envelope.payload["status"] as? String == "ready", document.state.recoveryDraft == nil else { cancelReload(token, error:HostFailure.pending("composition or recovery draft")); return }
    let snapshot = Snapshot(source:envelope.payload["source"] as! String, revision:BridgeEnvelope.integer(envelope.payload["revision"])!)
-   guard snapshot == document.state.received || document.accept(snapshot) else { cancelReload(error:HostFailure.stale); return }
+   guard snapshot == document.state.received || document.accept(snapshot) else { cancelReload(token, error:HostFailure.stale); return }
    reloadPrepared = true
-   let callback = reloadCompletion; reloadCompletion = nil; callback?(.success(snapshot)); return
+   let callback = reloadCompletion; reloadCompletion = nil; callback?(.success(token)); return
   }
   if envelope.method == "reloadComplete" {
-   guard envelope.requestID == reloadID, reloadCommitted else { return }
-   reloadID = nil; reloadPrepared = false; reloadCommitted = false; return
+   guard let token = reloadToken, envelope.requestID == token.requestID, document.state.epoch == token.candidateEpoch, reloadCommitted else { return }
+   reloadToken = nil; reloadPrepared = false; reloadCommitted = false; return
   }
   if envelope.method == "assetManifest" {
    guard let (snapshot, callback) = assetRequests.removeValue(forKey:envelope.requestID) else { return }

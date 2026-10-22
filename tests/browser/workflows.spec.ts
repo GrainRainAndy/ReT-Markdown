@@ -42,6 +42,7 @@ test("find searches hidden syntax and replace all is one root history transactio
   await expect(page.getByLabel("匹配数量")).toHaveText("4 处匹配");
   await page.getByRole("button", { name: "全部替换", exact: true }).click();
   await expect.poll(() => source(page)).toBe("__one__ and __two__");
+  await page.locator(".ProseMirror, .cm-content").first().focus();
   await command(page, "undo");
   await expect.poll(() => source(page)).toBe("**one** and **two**");
 });

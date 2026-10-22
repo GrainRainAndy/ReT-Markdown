@@ -209,7 +209,7 @@ final class AssetIntegrationTests: RecoveryIsolatedTestCase {
   let locked = try await evaluate(document,"return document.querySelector('#workspace').inert") as? Bool
   XCTAssertEqual(locked,true)
   _ = try await evaluate(document,"document.querySelector('.ProseMirror').dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true,data:'中'}));")
-  await MainActor.run { XCTAssertEqual(document.state.epoch,oldEpoch); document.host!.cancelReload() }
+  await MainActor.run { XCTAssertEqual(document.state.epoch,oldEpoch); document.host!.cancelReload(document.host!.reloadToken!) }
   queue.resume()
   try await Task.sleep(nanoseconds:200_000_000)
   let cancelled = try await flush(document); XCTAssertEqual(cancelled,old)
@@ -223,6 +223,91 @@ final class AssetIntegrationTests: RecoveryIsolatedTestCase {
   try await save(document,to:environment.root.appendingPathComponent("saved.md"))
   XCTAssertEqual(try String(contentsOf:environment.root.appendingPathComponent("saved.md"),encoding:.utf8),edited.source)
   await MainActor.run { environment.close(document) }
+ }
+ func testNativeCommandsRespectAuxiliaryFocusAndResumeRootHistory() async throws {
+  for opener in ["link", "find"] {
+   let document = try await attach("old")
+   _ = try await evaluate(document,"const d=new DataTransfer();d.setData('text/markdown','dirty');document.querySelector('.ProseMirror').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:d}));")
+   let before = try await flush(document)
+   await MainActor.run { document.host!.command(opener) }
+   try await Task.sleep(nanoseconds:150_000_000)
+   let focusedInput = try await evaluate(document,"return document.activeElement.tagName==='INPUT'") as? Bool
+   XCTAssertEqual(focusedInput,true)
+   await MainActor.run {
+    let host = document.host!
+    for id in ["undo", "redo", "bold"] {
+     XCTAssertEqual(host.commandEnabled[id],false)
+     host.command(id) // correctly disabled native menu
+     host.commandEnabled[id] = true
+     host.command(id) // stale native state still cannot bypass web ownership
+    }
+   }
+   let untouched = try await flush(document); XCTAssertEqual(untouched,before)
+   _ = try await evaluate(document,"document.querySelector('.command-dialog button[type=button]')?.click();document.querySelector('.ProseMirror').focus();")
+   try await Task.sleep(nanoseconds:100_000_000)
+   await MainActor.run { XCTAssertEqual(document.host!.commandEnabled["undo"],true); document.host!.command("undo") }
+   let undone = try await flush(document); XCTAssertEqual(undone.source,"old")
+   await MainActor.run { document.host!.command("redo") }
+   let redone = try await flush(document); XCTAssertEqual(redone.source,before.source)
+   await MainActor.run { environment.close(document) }
+  }
+ }
+ func testCancelledReloadOldSuccessCannotConsumeNextBarrier() async throws { try await overlappingReload(timeout:false, staleFailure:false) }
+ func testCancelledReloadOldFailureCannotCancelNextBarrier() async throws { try await overlappingReload(timeout:false, staleFailure:true) }
+ func testTimedOutReloadOldSuccessCannotConsumeNextBarrier() async throws { try await overlappingReload(timeout:true, staleFailure:false) }
+ func testTimedOutReloadOldFailureCannotCancelNextBarrier() async throws { try await overlappingReload(timeout:true, staleFailure:true) }
+ private func overlappingReload(timeout: Bool, staleFailure: Bool) async throws {
+  let document = try await attach("old")
+  let paste = "const d=new DataTransfer();d.setData('text/markdown','dirty');document.querySelector('.ProseMirror').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:d}));"
+  _ = try await evaluate(document,paste)
+  _ = try await flush(document)
+  _ = try await evaluate(document,"window.reloadTrace=[];const receive=window.retNative.receive;window.retNative.receive=e=>{if(e.method.startsWith('reload'))window.reloadTrace.push(e);receive(e);};")
+  let a = environment.root.appendingPathComponent("a.md"), b = environment.root.appendingPathComponent("b.md")
+  try Data("candidate A".utf8).write(to:a); try Data("candidate B".utf8).write(to:b)
+  let queue = environment.recoveryQueue; queue.suspend()
+  var queueHeld = true
+  defer { if queueHeld { queue.resume() } }
+  await MainActor.run { document.reloadExternal(a) }
+  try await Task.sleep(nanoseconds:250_000_000)
+  await MainActor.run { XCTAssertTrue(document.host!.hasReloadBarrier) }
+  if timeout { try await Task.sleep(nanoseconds:10_100_000_000) }
+  else { await MainActor.run { document.host!.cancelReload(document.host!.reloadToken!) } }
+  await MainActor.run { XCTAssertFalse(document.host!.isReplacing) }
+  if staleFailure {
+   // A's protected authorization will fail after cancellation permits this edit;
+   // B captures the new checkpoint and must survive A's late failure callback.
+   _ = try await evaluate(document,paste)
+   _ = try await flush(document)
+  }
+  await MainActor.run { document.reloadExternal(b) }
+  try await Task.sleep(nanoseconds:250_000_000)
+  await MainActor.run { XCTAssertTrue(document.host!.hasReloadBarrier) }
+  await MainActor.run {
+   let host = document.host!, token = host.reloadToken!
+   let wrongEpoch = EditorHost.ReloadToken(requestID:token.requestID,candidateEpoch:"other-candidate")
+   let wrongRequest = EditorHost.ReloadToken(requestID:"other-request",candidateEpoch:token.candidateEpoch)
+   for wrong in [wrongEpoch, wrongRequest] {
+    host.cancelReload(wrong); host.commitReload(wrong)
+    XCTAssertTrue(host.hasReloadBarrier(for:token))
+   }
+  }
+  queue.resume(); queueHeld = false
+  try await Task.sleep(nanoseconds:500_000_000)
+  let locked = try await evaluate(document,"return document.querySelector('#workspace').inert") as? Bool
+  XCTAssertEqual(locked,false,"Cancelled A must not consume B's barrier")
+  let traceIsExact = try await evaluate(document,"const t=window.reloadTrace,b=t.filter(e=>e.method==='reloadPrepare').at(-1);return t.filter(e=>e.method==='reloadCommit').every(e=>e.requestId===b.requestId&&e.epoch===b.payload.epoch)&&!t.some(e=>e.method==='reloadCancel'&&e.requestId===b.requestId)") as? Bool
+  XCTAssertEqual(traceIsExact,true)
+  let replacing = await MainActor.run { document.host!.isReplacing }
+  XCTAssertFalse(replacing)
+  // Avoid a ten-second save timeout when exercising the known RED barrier defect.
+  guard !replacing, locked == false else { await MainActor.run { environment.close(document) }; return }
+  let reloaded = try await flush(document); XCTAssertEqual(reloaded.source,"candidate B")
+  _ = try await evaluate(document,paste)
+  let edited = try await flush(document); XCTAssertTrue(edited.source.contains("dirty"))
+  let saved = environment.root.appendingPathComponent("saved-B.md")
+  try await save(document,to:saved)
+  XCTAssertEqual(try String(contentsOf:saved,encoding:.utf8),edited.source)
+  await MainActor.run { XCTAssertFalse(document.state.isDirty); environment.close(document) }
  }
  func testReloadRetriesLostCommitWithoutReopeningOldInput() async throws {
   let document = try await attach("old")

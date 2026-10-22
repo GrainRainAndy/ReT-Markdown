@@ -109,13 +109,16 @@ test("case-insensitive find keeps original Unicode offsets and replaces all in o
   await page.getByLabel("替换为", { exact: true }).fill("改");
   await page.getByRole("button", { name: "替换当前", exact: true }).click();
   await expect.poll(() => source(page)).toBe("İ 改 ONE one 尾");
+  await page.locator(".ProseMirror, .cm-content").first().focus();
   await command(page, "undo");
   await page.getByRole("button", { name: "上一个", exact: true }).click();
   await page.getByRole("button", { name: "替换当前", exact: true }).click();
   await expect.poll(() => source(page)).toBe("İ One ONE 改 尾");
+  await page.locator(".ProseMirror, .cm-content").first().focus();
   await command(page, "undo");
   await page.getByRole("button", { name: "全部替换", exact: true }).click();
   await expect.poll(() => source(page)).toBe("İ 改 改 改 尾");
+  await page.locator(".ProseMirror, .cm-content").first().focus();
   await command(page, "undo");
   await expect.poll(() => source(page)).toBe("İ One ONE one 尾");
 });
