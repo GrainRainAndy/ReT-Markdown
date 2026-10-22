@@ -39,7 +39,7 @@ Native → web：`window.retNative.receive(envelope)`。
 - Native `flush`：web 若 composition/recovery draft pending 返回 `flushResult {status:'pending',reason}`；否则返回 `{status:'ready',source,revision}`，沿用 requestId。
 - Native `saved`：`{source,revision}`；只确认该源文，当前文档不等于它时仍 dirty。
 - Native `command`：`{id:string}`；包括 undo/redo/toggleSource/find/replace/bold/italic/link/heading1…heading6/bulletList/orderedList/quote/codeBlock/mathBlock/table/insertImage。
-- Web `importImage`：`{dataURL?:string,fileName?:string}` 或空载荷启动原生文件选择器；native `assetResult {relativePath,requestId,error?}`。成功后 web 作为一次根事务插入引用。
+- Web `importImage`：`{dataURL?:string,fileName?:string}`，空载荷启动原生文件选择器，或 `{source:'clipboard'}` 明确只取系统剪贴板中的图片（即使同时有文字）。clipboard 来源与 dataURL 不可同时提供；native `assetResult {relativePath,requestId,error?}` 的 envelope requestId 必须匹配待处理请求，payload requestId 若存在必须与之相同。成功后 web 作为一次根事务插入引用。
 - Web `exportContent` 响应宿主 `prepareExport`：`{html,revision}`；html 是冻结源文的独立安全渲染内容，包含本地 CSS/公式，无编辑DOM；宿主独立打印WebView。
 - Native `appearance`：`{mode:'system'|'light'|'dark'}`；native `error`：`{message,operation}`。
 - 浏览器无 bridge 时具有内存文稿、下载/文件选择开发回退，但不冒称原生保存成功。
