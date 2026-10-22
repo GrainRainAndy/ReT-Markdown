@@ -190,17 +190,53 @@ test("selection from a real cell into a missing cell remains a source range", as
       .setBaseAndExtent(cells[0]!.firstChild!, 0, cells[2]!, 0);
     const data = new DataTransfer();
     data.setData("text/plain", "X");
-    document
-      .querySelector(".ProseMirror")!
-      .dispatchEvent(
-        new ClipboardEvent("paste", {
-          bubbles: true,
-          cancelable: true,
-          clipboardData: data,
-        }),
-      );
+    document.querySelector(".ProseMirror")!.dispatchEvent(
+      new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: data,
+      }),
+    );
   });
   await expect
     .poll(() => source(page))
     .toBe("| A | B | C |\n|---|---|---|\n| X");
 });
+for (const slashes of [1, 2, 3, 4])
+  for (const column of [1, 2])
+    test(`virtual column ${column} preserves trailing escape parity ${slashes}`, async ({
+      page,
+    }) => {
+      const initial =
+        "| A | B | C |\n|---|---|---|\n| one " + "\\".repeat(slashes) + "|";
+      await load(page, initial);
+      await page.locator("td").nth(column).click();
+      await page.keyboard.type("X");
+      const edited =
+        initial + (slashes % 2 ? " |" : "") + "  |".repeat(column - 1) + " X |";
+      await expect.poll(() => source(page)).toBe(edited);
+      await expect(page.locator("td").nth(column)).toHaveText("X");
+      await command(page, "undo");
+      await expect.poll(() => source(page)).toBe(initial);
+      await command(page, "redo");
+      await expect(page.locator("td").nth(column)).toHaveText("X");
+      await expect.poll(() => source(page)).toBe(edited);
+    });
+for (const eol of ["\n", "\r\n"])
+  test(`empty quote literal keeps following paragraph separate ${JSON.stringify(eol)}`, async ({
+    page,
+  }) => {
+    const initial = "> ```" + eol + "outside";
+    await load(page, initial);
+    await page.locator(".literal .cm-content").click();
+    await page.keyboard.type("x");
+    await expect
+      .poll(() => source(page))
+      .toBe("> ```" + eol + "> x" + eol + "outside");
+    await expect(page.locator(".ProseMirror > p")).toHaveText("outside");
+    await expect(
+      page.getByRole("dialog", { name: "恢复未提交输入" }),
+    ).toHaveCount(0);
+    await command(page, "undo");
+    await expect.poll(() => source(page)).toBe(initial);
+  });

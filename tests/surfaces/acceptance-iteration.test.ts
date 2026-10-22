@@ -1,6 +1,9 @@
 import { expect, it } from "vitest";
 import { RichProjection } from "../../editor/surfaces/projection";
-import { literalPatch } from "../../editor/surfaces/commands";
+import {
+  literalPatch,
+  virtualCellIntent,
+} from "../../editor/surfaces/commands";
 import { DocumentSession } from "../../editor/core/document";
 import { renderDocument } from "../../editor/render/document";
 
@@ -112,3 +115,108 @@ it("distinguishes same-line indentation from leading blank lines", () => {
     new RichProjection("  \n  text").projection.blocks.map((n) => n.type),
   ).toEqual(["gap", "paragraph"]);
 });
+
+for (const eol of ["\n", "\r\n"])
+  for (const [opening, prefix] of [
+    ["> ", "> "],
+    ["> > ", "> > "],
+    ["- > ", "  > "],
+    ["- ", "  "],
+  ])
+    for (const fence of ["```", "~~~js", "$$"])
+      it(`edits empty unclosed literal before outside block ${JSON.stringify([opening, fence, eol])}`, () => {
+        const source = opening + fence + eol + "outside";
+        const code = [...new RichProjection(source).records.values()].find(
+          (r) => ["code", "math"].includes(r.node.type),
+        )!.node;
+        const owner = {
+          kind: code.type === "math" ? "math" : "code",
+          nodeId: "boundary",
+        } as const;
+        const session = new DocumentSession(source);
+        const intent = literalPatch(source, code, "x", 1, 1, owner);
+        session.apply(intent.patches, intent.selection);
+        const expected = opening + fence + eol + prefix + "x" + eol + "outside";
+        expect(session.source).toBe(expected);
+        const next = [...new RichProjection(expected).records.values()].find(
+          (r) => r.node.type === code.type,
+        )!.node;
+        expect(next.attributes.closed).toBe(false);
+        expect(next.text).toBe("x");
+        expect(session.selection.head.offset).toBe(expected.indexOf("x") + 1);
+        const continued = literalPatch(expected, next, "x\n\ny", 4, 4, owner);
+        session.apply(continued.patches, continued.selection);
+        expect(session.source).toBe(
+          opening +
+            fence +
+            eol +
+            prefix +
+            "x" +
+            eol +
+            prefix +
+            eol +
+            prefix +
+            "y" +
+            eol +
+            "outside",
+        );
+        session.undo();
+        expect(session.source).toBe(expected);
+        session.undo();
+        expect(session.source).toBe(source);
+      });
+for (const slashes of [1, 2, 3, 4])
+  for (const column of [1, 2])
+    it(`materializes column ${column} after ${slashes} trailing backslashes`, () => {
+      const source =
+        "| A | B | C |\n|---|---|---|\n| one " + "\\".repeat(slashes) + "|";
+      const before = new RichProjection(source);
+      const cell = before.projection.blocks[0]!.children[1]!.children[column]!;
+      const session = new DocumentSession(source);
+      const intent = virtualCellIntent(cell, "X", {
+        kind: "cell",
+        tableId: "table",
+        row: 1,
+        column,
+      });
+      session.apply(intent.patches, intent.selection);
+      expect(session.source).toBe(
+        source + (slashes % 2 ? " |" : "") + "  |".repeat(column - 1) + " X |",
+      );
+      const row = new RichProjection(session.source).doc.firstChild!.child(1);
+      expect(row.childCount).toBe(3);
+      expect(row.child(column).textContent).toBe("X");
+      expect(row.child(0).textContent).toBe(
+        before.doc.firstChild!.child(1).child(0).textContent,
+      );
+      session.undo();
+      expect(session.source).toBe(source);
+      session.redo();
+      expect(
+        new RichProjection(session.source).doc
+          .firstChild!.child(1)
+          .child(column).textContent,
+      ).toBe("X");
+    });
+for (const eol of ["\n", "\r\n"])
+  for (const [opening, prefix] of [
+    ["> ", "> "],
+    ["- > ", "  > "],
+  ])
+    it(`preserves an existing empty body prefix before the following block ${JSON.stringify([opening, eol])}`, () => {
+      const source = opening + "```" + eol + prefix + eol + "outside";
+      const node = [...new RichProjection(source).records.values()].find(
+        (r) => r.node.type === "code",
+      )!.node;
+      const session = new DocumentSession(source);
+      const intent = literalPatch(source, node, "x", 1, 1, {
+        kind: "code",
+        nodeId: "empty-line",
+      });
+      session.apply(intent.patches, intent.selection);
+      expect(session.source).toBe(
+        opening + "```" + eol + prefix + "x" + eol + "outside",
+      );
+      session.undo();
+      expect(session.source).toBe(source);
+    });

@@ -20,10 +20,12 @@ export function buildProjection(source: string): DocumentProjection {
   const resolve = referenceResolver(syntax.root);
   const convert = (node: SyntaxNode): ProjectionNode => {
     // Container parsers may stop an empty unclosed fence before its existing
-    // ending. That ending is the body anchor, not a second newline to insert.
+    // ending at EOF. Only then is it a free body anchor; before another block,
+    // retain that ending as the separator after newly inserted literal content.
     if (node.attributes.fence && !node.attributes.closed && !/[\r\n]/.test(node.raw)) {
       const ending = /^(\r\n|\r|\n)/.exec(source.slice(node.to));
-      if (ending) node = { ...node, to: node.to + ending[0].length, raw: node.raw + ending[0] };
+      if (ending && node.to + ending[0].length === source.length)
+        node = { ...node, to: node.to + ending[0].length, raw: node.raw + ending[0] };
     }
     let content = node.raw;
     let from = node.from;
@@ -49,6 +51,9 @@ export function buildProjection(source: string): DocumentProjection {
         const value = node.value.replace(/\r\n?|\n/g, '\n');
         const extraEndings = content.split(/\r\n|\r|\n/).length - value.split('\n').length;
         mapped = mapSemanticText(content, from, value + '\n'.repeat(Math.max(0, extraEndings)), false);
+        // An empty semantic line may still contain a parser-confirmed container
+        // prefix. Insert after those existing bytes rather than duplicating them.
+        if (!mapped.text) mapped = mapText('', from + content.length);
       }
       if (node.type === 'inlineCode' && node.value !== undefined) mapped = mapInlineCode(source, node.contentRanges ?? [], node.value, node.attributes.gfmTableCode === true);
     } catch (error) {
@@ -62,6 +67,7 @@ export function buildProjection(source: string): DocumentProjection {
       const width = children[0]?.children.length ?? 0;
       children.forEach((row, rowIndex) => {
         const count = row.children.length;
+        const trailingPipe = /(\\*)\|[ \t]*$/.exec(row.raw);
         row.children = Array.from({ length: width }, (_, column) => {
           const cell = row.children[column];
           if (cell) return { ...cell, attributes: { ...cell.attributes, row: rowIndex, column } };
@@ -69,7 +75,7 @@ export function buildProjection(source: string): DocumentProjection {
             id: `${row.id}-virtual-${column}`, type: 'tableCell', raw: '',
             from: row.to, to: row.to, text: '', children: [],
             attributes: { virtual: true, row: rowIndex, column, missingBefore: column - count,
-              needsSeparator: !/(?<!\\)\|[ \t]*$/.test(row.raw) },
+              needsSeparator: !trailingPipe || trailingPipe[1]!.length % 2 !== 0 },
             mapping: mapText('', row.to).mapping,
           };
         });
