@@ -267,3 +267,85 @@ footer button {
 [hidden] {
   display: none !important;
 }
+.find-panel {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 10px 20px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.find-panel input,
+.command-dialog input {
+  font: inherit;
+  background: var(--code);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 5px;
+  margin-left: 8px;
+}
+.replace-row {
+  width: 100%;
+  display: flex;
+  gap: 8px;
+}
+.command-dialog {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.command-dialog::backdrop {
+  background: #0004;
+}
+.command-dialog button {
+  margin-left: 10px;
+}
+.math-preview {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 12px;
+  overflow-x: auto;
+}
+.inline-math {
+  cursor: pointer;
+  background: transparent;
+}
+.image-object img {
+  max-width: 100%;
+  max-height: 80vh;
+}
+.selected-cell {
+  background: #3682dd33 !important;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.context-menu {
+  position: fixed;
+  z-index: 30;
+  min-width: 190px;
+  padding: 5px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px #0003;
+}
+.context-menu button {
+  display: block;
+  width: 100%;
+  border: 0;
+  text-align: left;
+  padding: 4px 10px;
+}
+.context-menu button:hover {
+  background: var(--code);
+}

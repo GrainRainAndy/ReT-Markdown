@@ -27,7 +27,10 @@ export class HostBridge {
   epoch = "";
   private sequence = 0;
   private loaded = false;
-  constructor(private handler: (message: Envelope) => void) {
+  constructor(
+    private handler: (message: Envelope) => void,
+    private canLoad: () => boolean = () => true,
+  ) {
     window.retNative = { receive: (message) => this.receive(message) };
   }
   get native(): boolean {
@@ -78,6 +81,8 @@ export class HostBridge {
         Number(m.payload.revision) < 0
       )
         return;
+      // Identity and application state cross the load barrier together.
+      if (!this.canLoad()) return;
       this.documentId = m.documentId;
       this.epoch = m.epoch;
       this.loaded = true;

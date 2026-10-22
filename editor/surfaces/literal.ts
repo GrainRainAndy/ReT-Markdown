@@ -8,21 +8,27 @@ import {
   type TextMapping,
 } from "../syntax/mapping";
 import { minimalPatch, newlineAt } from "./editing";
+import { plainMarkdown, clipboardHTML } from "./clipboard";
+import { escapeHTML } from "../render/document";
 import type { Patch } from "../core/types";
 export interface LiteralOptions {
   source: () => string;
   range: () => { text: string; mapping: TextMapping };
   change: (patch: Patch, anchor: number, head: number) => void;
+  editText?: (text: string, anchor: number, head: number) => void;
   select: (anchor: number, head: number) => void;
   command: (id: string) => void;
   key?: (event: KeyboardEvent) => boolean;
   composition: (active: boolean) => void;
   failure: (text: string, error: unknown) => void;
   label: string;
+  markdown?: boolean;
+  image?: (file: File) => void;
 }
 export class LiteralEditor {
   readonly view: EditorView;
   private updating = false;
+  private copyMode: "markdown" | "plain" | "rich" | null = null;
   private composing = false;
   private baseline: string;
   private notifying = false;
@@ -83,6 +89,56 @@ export class LiteralEditor {
           Prec.highest(
             EditorView.domEventHandlers({
               keydown: (event) => options.key?.(event) ?? false,
+              paste: (event, view) => {
+                if (this.composing) return false;
+                const data = event.clipboardData;
+                if (!data) return false;
+                const markdown = data.getData("text/markdown");
+                if (markdown) {
+                  event.preventDefault();
+                  view.dispatch(view.state.replaceSelection(markdown));
+                  return true;
+                }
+                if (!data.getData("text/plain") && options.image) {
+                  const image = [...data.files].find((f) =>
+                    f.type.startsWith("image/"),
+                  );
+                  if (image) {
+                    event.preventDefault();
+                    options.image(image);
+                    return true;
+                  }
+                }
+                return false;
+              },
+              copy: (event, view) => {
+                if (!this.copyMode || !event.clipboardData) return false;
+                const mode = this.copyMode;
+                this.copyMode = null;
+                const s = view.state.selection.main,
+                  text = view.state.sliceDoc(s.from, s.to);
+                if (!text) return false;
+                event.preventDefault();
+                try {
+                  event.clipboardData.setData(
+                    "text/plain",
+                    mode === "plain" && options.markdown
+                      ? plainMarkdown(text)
+                      : text,
+                  );
+                  event.clipboardData.setData("text/markdown", text);
+                  if (mode === "rich")
+                    event.clipboardData.setData(
+                      "text/html",
+                      options.markdown
+                        ? clipboardHTML(text)
+                        : "<pre><code>" + escapeHTML(text) + "</code></pre>",
+                    );
+                } catch {
+                  /* A blocked clipboard must leave the document unchanged. */
+                }
+                return true;
+              },
               compositionstart: () => {
                 this.composing = true;
                 options.composition(true);
@@ -118,6 +174,19 @@ export class LiteralEditor {
     if (this.updating || this.composing) return;
     const text = this.view.state.doc.toString();
     if (text === this.baseline) return;
+    if (this.options.editText) {
+      const selection = this.view.state.selection.main;
+      try {
+        this.notifying = true;
+        this.options.editText(text, selection.anchor, selection.head);
+        this.baseline = text;
+      } catch (error) {
+        this.options.failure(text, error);
+      } finally {
+        this.notifying = false;
+      }
+      return;
+    }
     const range = this.options.range();
     const diff = minimalPatch(this.baseline, text);
     const from = mapTextToSource(range.mapping, diff.from),
@@ -181,6 +250,41 @@ export class LiteralEditor {
     } finally {
       this.updating = false;
     }
+  }
+  viewportBookmark(): { offset: number; top: number } | null {
+    const box = this.view.contentDOM.getBoundingClientRect();
+    const at = this.view.posAtCoords(
+      { x: box.left + 10, y: Math.max(box.top + 2, 8) },
+      false,
+    );
+    if (at === null) return null;
+    const coords = this.view.coordsAtPos(at);
+    return coords
+      ? {
+          offset: mapTextToSource(this.options.range().mapping, at),
+          top: coords.top,
+        }
+      : null;
+  }
+  coordinatesAt(offset: number): { top: number } | null {
+    return this.view.coordsAtPos(
+      mapSourceToText(this.options.range().mapping, offset),
+    );
+  }
+  revealOffset(offset: number): void {
+    this.view.dispatch({
+      effects: EditorView.scrollIntoView(
+        mapSourceToText(this.options.range().mapping, offset),
+        { y: "start", yMargin: 0 },
+      ),
+    });
+  }
+  copy(mode: "markdown" | "plain" | "rich"): boolean {
+    this.copyMode = mode;
+    this.view.focus();
+    const copied = document.execCommand("copy");
+    this.copyMode = null;
+    return copied;
   }
   focus(): void {
     this.view.focus();

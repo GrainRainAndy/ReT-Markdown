@@ -31,6 +31,7 @@ import AppKit
   edit.addItem(.separator())
   item(edit, "剪切", #selector(NSText.cut(_:)), "x"); item(edit, "拷贝", #selector(NSText.copy(_:)), "c")
   item(edit, "粘贴", #selector(NSText.paste(_:)), "v"); item(edit, "全选", #selector(NSText.selectAll(_:)), "a")
+  command(edit, "拷贝 Markdown", "copyMarkdown"); command(edit, "拷贝纯文本", "copyPlain"); command(edit, "拷贝富文本", "copyRich")
   edit.addItem(.separator()); command(edit, "查找", "find", "f"); command(edit, "替换", "replace", "f", [.command,.option])
   let format = menu("格式")
   command(format, "加粗", "bold", "b"); command(format, "斜体", "italic", "i"); command(format, "链接", "link", "k")
@@ -38,6 +39,9 @@ import AppKit
   for level in 1...6 { command(format, "标题 \(level)", "heading\(level)", String(level)) }
   format.addItem(.separator())
   for (title,id) in [("无序列表","bulletList"),("有序列表","orderedList"),("引用","quote"),("代码块","codeBlock"),("数学块","mathBlock"),("表格","table"),("插入图片…","insertImage")] { command(format,title,id) }
+  command(format, "代码语言…", "codeLanguage"); command(format, "行内公式源码…", "inlineMathSource")
+  let table = menu("表格")
+  for (title,id) in [("选取单元格区域","tableSelectCells"),("插入行","tableAddRow"),("删除行","tableDeleteRow"),("插入列","tableAddColumn"),("删除列","tableDeleteColumn"),("靠左对齐","tableAlignLeft"),("居中对齐","tableAlignCenter"),("靠右对齐","tableAlignRight")] { command(table,title,id) }
   let view = menu("显示")
   command(view, "切换源码", "toggleSource", "/")
   for (title, mode) in [("跟随系统","system"),("浅色","light"),("深色","dark")] {

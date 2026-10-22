@@ -1,67 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
-async function load(
-  page: Page,
-  source: string,
-  extra: Record<string, unknown> = {},
-) {
-  await page.addInitScript(
-    ({ source, extra }) => {
-      const w = window as any;
-      w.hostMessages = [];
-      w.webkit = {
-        messageHandlers: {
-          ret: {
-            postMessage: (e: any) => {
-              w.hostMessages.push(e);
-              if (e.method === "ready")
-                queueMicrotask(() =>
-                  w.retNative.receive({
-                    v: 1,
-                    documentId: "doc-a",
-                    epoch: "epoch-a",
-                    requestId: "load",
-                    method: "load",
-                    payload: {
-                      source,
-                      revision: 7,
-                      displayName: "测试.md",
-                      fileURL: null,
-                      appearance: "light",
-                      ...extra,
-                    },
-                  }),
-                );
-            },
-          },
-        },
-      };
-    },
-    { source, extra },
-  );
-  await page.goto("/");
-}
-async function command(page: Page, id: string) {
-  await page.evaluate(
-    (id) =>
-      (window as any).retNative.receive({
-        v: 1,
-        documentId: "doc-a",
-        epoch: "epoch-a",
-        requestId: id,
-        method: "command",
-        payload: { id },
-      }),
-    id,
-  );
-}
-async function source(page: Page) {
-  return page.evaluate(() => {
-    const m = (window as any).hostMessages.filter(
-      (m: any) => m.method === "checkpoint",
-    );
-    return m.at(-1)?.payload.source;
-  });
-}
+import { test, expect } from "@playwright/test";
+import { load, command, source } from "./helpers";
 test("paragraph split and merge preserve untouched source and root history", async ({
   page,
 }) => {
@@ -261,4 +199,58 @@ test("composition barriers and frozen export use public protocol and loaded revi
     }),
   );
   await expect(prose).toBeVisible();
+});
+test("rejected load during composition does not adopt the replacement epoch", async ({
+  page,
+}) => {
+  await load(page, "kept");
+  const prose = page.locator(".ProseMirror");
+  await prose.dispatchEvent("compositionstart", { data: "中" });
+  await page.evaluate(() =>
+    (window as any).retNative.receive({
+      v: 1,
+      documentId: "doc-a",
+      epoch: "replacement",
+      requestId: "new-load",
+      method: "load",
+      payload: { source: "lost", revision: 20 },
+    }),
+  );
+  await page.evaluate(() =>
+    (window as any).retNative.receive({
+      v: 1,
+      documentId: "doc-a",
+      epoch: "epoch-a",
+      requestId: "old-flush",
+      method: "flush",
+      payload: {},
+    }),
+  );
+  expect(
+    await page.evaluate(
+      () =>
+        (window as any).hostMessages.find(
+          (m: any) => m.requestId === "old-flush",
+        )?.payload.status,
+    ),
+  ).toBe("pending");
+  await prose.dispatchEvent("compositionend", { data: "" });
+  await page.evaluate(() =>
+    (window as any).retNative.receive({
+      v: 1,
+      documentId: "doc-a",
+      epoch: "epoch-a",
+      requestId: "kept-flush",
+      method: "flush",
+      payload: {},
+    }),
+  );
+  expect(
+    await page.evaluate(
+      () =>
+        (window as any).hostMessages.find(
+          (m: any) => m.requestId === "kept-flush",
+        )?.payload.source,
+    ),
+  ).toBe("kept");
 });

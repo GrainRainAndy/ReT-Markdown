@@ -53,3 +53,19 @@ describe("source intents", () => {
     expect(run("3. [x] item", 11, "enter").source).toBe("3. [x] item\n4. [ ] ");
   });
 });
+it("splits Setext heading into heading then ordinary paragraph without moving the original underline style", () => {
+  expect(run("AlphaBeta\n=====  ", 5, "enter").source).toBe(
+    "Alpha\n=====  \n\nBeta",
+  );
+});
+it("empty nested item Enter and Backspace remove exactly the parent marker indentation", () => {
+  const source = "10. A\r\n    * ";
+  const p = buildProjection(source),
+    s = logical(source.length);
+  expect(enterIntent(source, s, p)!.patches).toEqual([
+    { from: 7, to: 13, insert: "* " },
+  ]);
+  expect(backspaceIntent(source, s, p)!.patches).toEqual([
+    { from: 7, to: 13, insert: "* " },
+  ]);
+});

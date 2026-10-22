@@ -70,6 +70,40 @@ export function replaceIntent(
 export function flatten(nodes: ProjectionNode[]): ProjectionNode[] {
   return nodes.flatMap((n) => [n, ...flatten(n.children)]);
 }
+function listExitPrefix(
+  source: string,
+  projection: DocumentProjection,
+  at: number,
+  container: string,
+  marker: string,
+  eol: string,
+  start: number,
+): string {
+  let parent: ProjectionNode | undefined,
+    containingItem: ProjectionNode | undefined;
+  const walk = (nodes: ProjectionNode[], ancestor?: ProjectionNode): void => {
+    for (const n of nodes) {
+      if (n.from > at || n.to < at) continue;
+      if (n.type === "listItem") {
+        containingItem = n;
+        parent = ancestor;
+        walk(n.children, n);
+      } else walk(n.children, ancestor);
+    }
+  };
+  walk(projection.blocks);
+  if (!parent && containingItem && containingItem.from < start) {
+    const oldLine =
+      source.lastIndexOf("\n", Math.max(0, containingItem.from - 1)) + 1;
+    const column = /^[ \t>]*/.exec(source.slice(start, at))![0].length;
+    if (column > containingItem.from - oldLine) parent = containingItem;
+  }
+  if (parent) {
+    const line = source.lastIndexOf("\n", Math.max(0, parent.from - 1)) + 1;
+    return source.slice(line, parent.from) + marker;
+  }
+  return container || (start > 0 ? eol : "");
+}
 export function enterIntent(
   source: string,
   selection: LogicalSelection,
@@ -82,18 +116,55 @@ export function enterIntent(
   const lineStart = source.lastIndexOf("\n", Math.max(0, from - 1)) + 1;
   const line = source.slice(lineStart, from);
   if (shift) return replaceIntent(from, to, "  " + eol);
+  const heading = flatten(projection.blocks).find(
+    (n) => n.type === "heading" && n.from <= from && n.to >= to,
+  );
+  if (heading) {
+    const underline = /(\r\n|\n|\r)([ \t]*[=-]+[ \t]*)$/.exec(heading.raw);
+    if (underline) {
+      const oldStart = heading.from + underline.index;
+      const insert = eol + underline[2] + eol + eol;
+      if (to === oldStart) return replaceIntent(from, heading.to, insert);
+      return {
+        patches: [
+          { from, to, insert },
+          { from: oldStart, to: heading.to, insert: "" },
+        ],
+        selection: logical(from + insert.length),
+      };
+    }
+  }
   const gap = projection.blocks.find(
     (n) => n.type === "gap" && n.from === from,
   );
   if (gap) return replaceIntent(from, to, eol);
-  const list = /^(\s*)([-+*]|\d+[.)])(\s+)(\[[ xX]\]\s+)?(.*)$/.exec(line);
+  const list =
+    /^((?:[ \t]*>[ \t]?)*)([ \t]*)([-+*]|\d+[.)])([ \t]+)(\[[ xX]\][ \t]+)?(.*)$/.exec(
+      line,
+    );
   if (list) {
-    const [, indent = "", marker = "", space = "", task = "", body = ""] = list;
+    const [
+      ,
+      container = "",
+      indent = "",
+      marker = "",
+      space = "",
+      task = "",
+      body = "",
+    ] = list;
     if (!body)
       return replaceIntent(
         lineStart,
         from,
-        indent.length >= 2 ? indent.slice(2) + marker + space : "",
+        listExitPrefix(
+          source,
+          projection,
+          from,
+          container,
+          marker + space + task,
+          eol,
+          lineStart,
+        ),
       );
     const next = /^\d/.test(marker)
       ? String(parseInt(marker) + 1) + marker.slice(-1)
@@ -101,13 +172,19 @@ export function enterIntent(
     return replaceIntent(
       from,
       to,
-      eol + indent + next + space + (task ? "[ ] " : ""),
+      eol + container + indent + next + space + (task ? "[ ] " : ""),
     );
   }
   const quote = /^(\s*(?:>\s?)+)(.*)$/.exec(line);
   if (quote) {
-    if (!quote[2])
-      return replaceIntent(lineStart, from, quote[1]!.replace(/>\s?$/, ""));
+    if (!quote[2]) {
+      const prefix = quote[1]!.replace(/>\s?$/, "");
+      return replaceIntent(
+        lineStart,
+        from,
+        !prefix.trim() && lineStart > 0 ? eol : prefix,
+      );
+    }
     return replaceIntent(from, to, eol + quote[1]);
   }
   return replaceIntent(from, to, eol + eol);
@@ -135,11 +212,23 @@ export function backspaceIntent(
   }
   const start = source.lastIndexOf("\n", Math.max(0, at - 1)) + 1;
   const prefix = source.slice(start, at);
-  if (/^\s*(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?$/.test(prefix))
+  const list =
+    /^((?:[ \t]*>[ \t]?)*)([ \t]*)([-+*]|\d+[.)])([ \t]+)(\[[ xX]\][ \t]+)?$/.exec(
+      prefix,
+    );
+  if (list)
     return replaceIntent(
       start,
       at,
-      prefix.startsWith("  ") ? prefix.slice(2) : "",
+      listExitPrefix(
+        source,
+        projection,
+        at,
+        list[1]!,
+        list[3]! + list[4]! + (list[5] ?? ""),
+        newlineAt(source, start),
+        start,
+      ),
     );
   return null;
 }

@@ -11,7 +11,16 @@ import {
   type Intent,
 } from "./surfaces/editing";
 import { mapText } from "./syntax/mapping";
-import { renderDocument } from "./render/document";
+import { renderDocument, assetURL } from "./render/document";
+import {
+  headingIntent,
+  markIntent,
+  blockIntent,
+  tableIntent,
+  containing,
+  mapOffset,
+} from "./surfaces/commands";
+import { FindPanel } from "./surfaces/find";
 const app = document.querySelector<HTMLElement>("#app")!;
 app.innerHTML =
   '<div id="notice" role="alert" hidden></div><section id="workspace" aria-label="文稿"></section><footer><span id="status" role="status"></span><button id="mode" title="切换源码（⌘⇧M）">源码</button></footer><section id="recovery" role="dialog" aria-label="恢复未提交输入" hidden><h2>恢复未提交输入</h2><p id="recovery-reason"></p><details><summary>原始输入草稿</summary><pre id="draft-content"></pre></details><label>待应用的完整 Markdown<textarea id="recovery-source" spellcheck="false"></textarea></label><button id="recover-apply">应用恢复文本</button><button id="recover-discard">放弃未提交草稿</button></section>';
@@ -31,11 +40,100 @@ let session = new DocumentSession(""),
   resolving = false,
   lastRevision = 0,
   unsubscribe: (() => void) | undefined;
+let mountGeneration = 0;
 let queued: string[] = [];
+let queuedAssets: Envelope[] = [];
 let received = 0,
   durable = 0;
 let fileName = "未命名.md";
-const host = new HostBridge(receive);
+const imageRequests = new Map<string, { anchor: number; head: number }>();
+const host = new HostBridge(receive, () => {
+  if (!composing && !draft) return true;
+  notice("当前输入尚未提交，拒绝替换文稿");
+  return false;
+});
+const find = new FindPanel(
+  app,
+  () => session,
+  (selection) => {
+    session.setSelection(selection);
+    if (mode !== "source") {
+      mode = "source";
+      mount();
+    } else refresh();
+    literal?.view.dispatch({ effects: [], scrollIntoView: true });
+  },
+  (intent) => {
+    if (mode !== "source") {
+      mode = "source";
+      mount();
+    }
+    apply(intent);
+  },
+);
+function ask(
+  label: string,
+  value: string,
+  accept: (value: string) => void,
+): void {
+  const dialog = document.createElement("dialog");
+  dialog.className = "command-dialog";
+  const form = document.createElement("form");
+  form.method = "dialog";
+  const title = document.createElement("label");
+  title.textContent = label;
+  const input = document.createElement("input");
+  input.value = value;
+  input.setAttribute("aria-label", label);
+  title.append(input);
+  const ok = document.createElement("button");
+  ok.textContent = "应用";
+  ok.type = "submit";
+  const cancel = document.createElement("button");
+  cancel.textContent = "取消";
+  cancel.type = "button";
+  cancel.onclick = () => dialog.close();
+  form.append(title, ok, cancel);
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    accept(input.value);
+    dialog.close();
+  };
+  dialog.append(form);
+  app.append(dialog);
+  dialog.onclose = () => dialog.remove();
+  dialog.showModal();
+  input.focus();
+  input.select();
+}
+function importImage(file?: File): void {
+  if (!host.native) {
+    notice("图片导入需要 macOS 文稿宿主");
+    return;
+  }
+  const bookmark = {
+    anchor: session.selection.anchor.offset,
+    head: session.selection.head.offset,
+  };
+  const id = "asset-" + crypto.randomUUID();
+  imageRequests.set(id, bookmark);
+  if (file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (imageRequests.has(id))
+        host.send(
+          "importImage",
+          { dataURL: String(reader.result), fileName: file.name },
+          id,
+        );
+    };
+    reader.onerror = () => {
+      imageRequests.delete(id);
+      notice("无法读取剪贴板图片");
+    };
+    reader.readAsDataURL(file);
+  } else host.send("importImage", {}, id);
+}
 function notice(text: string): void {
   const node = document.querySelector<HTMLElement>("#notice")!;
   node.textContent = text;
@@ -55,6 +153,9 @@ function composition(active: boolean): void {
     const pending = queued;
     queued = [];
     for (const command of pending) execute(command);
+    const assets = queuedAssets;
+    queuedAssets = [];
+    for (const asset of assets) receive(asset);
   }
 }
 function recover(
@@ -90,7 +191,12 @@ function apply(intent: Intent, group?: string): void {
   }
   try {
     session.apply(intent.patches, intent.selection, group);
-    refresh(intent.patches.length === 1 ? intent.patches[0] : undefined);
+    for (const entry of imageRequests.values()) {
+      entry.anchor = mapOffset(entry.anchor, intent.patches);
+      entry.head = mapOffset(entry.head, intent.patches);
+    }
+    find.update();
+    refresh(intent.patches);
   } catch (error) {
     const patch = intent.patches.length === 1 ? intent.patches[0] : undefined;
     recover(
@@ -105,7 +211,7 @@ function apply(intent: Intent, group?: string): void {
     );
   }
 }
-function refresh(patch?: Patch): void {
+function refresh(patch?: Patch | readonly Patch[]): void {
   if (mode === "rich") rich?.refresh(patch);
   else
     literal?.refresh(
@@ -115,6 +221,7 @@ function refresh(patch?: Patch): void {
   updateStatus();
 }
 function mount(focus = false): void {
+  mountGeneration++;
   rich?.destroy();
   rich = undefined;
   literal?.destroy();
@@ -129,12 +236,15 @@ function mount(focus = false): void {
       composition,
       recover,
       notice,
+      image: importImage,
     });
     if (focus) rich.focus();
   } else {
     workspace.className = "source-surface";
     literal = new LiteralEditor(workspace, {
       label: "Markdown 源码",
+      markdown: true,
+      image: importImage,
       source: () => session.source,
       range: () => mapText(session.source, 0),
       change: (patch, anchor, head) =>
@@ -166,7 +276,9 @@ function load(payload: Record<string, unknown>): void {
     return;
   }
   unsubscribe?.();
+  imageRequests.clear();
   session = new DocumentSession(String(payload.source ?? ""));
+  session.setSelection(logical(session.source.startsWith("\uFEFF") ? 1 : 0));
   baseline = Number(payload.revision) || 0;
   lastRevision = 0;
   received = baseline;
@@ -214,6 +326,8 @@ function receive(message: Envelope): void {
       if (typeof p.id === "string") execute(p.id);
       break;
     case "flush":
+      imageRequests.clear();
+      queuedAssets = [];
       host.send(
         "flushResult",
         composing || draft
@@ -240,6 +354,34 @@ function receive(message: Envelope): void {
         updateStatus();
       }
       break;
+    case "assetResult": {
+      if (composing || draft) {
+        queuedAssets.push(message);
+        break;
+      }
+      const id =
+          typeof p.requestId === "string" ? p.requestId : message.requestId,
+        bookmark = imageRequests.get(id);
+      if (!bookmark) break;
+      imageRequests.delete(id);
+      if (p.error) {
+        notice(String(p.error));
+        break;
+      }
+      const path = typeof p.relativePath === "string" ? p.relativePath : "";
+      if (!assetURL(path)) {
+        notice("图片路径无效");
+        break;
+      }
+      apply(
+        replaceIntent(
+          Math.min(bookmark.anchor, bookmark.head),
+          Math.max(bookmark.anchor, bookmark.head),
+          "![图片](" + path.split("/").map(encodeURIComponent).join("/") + ")",
+        ),
+      );
+      break;
+    }
     case "appearance":
       appearance(String(p.mode));
       break;
@@ -268,13 +410,38 @@ function execute(id: string): void {
     notice("请先恢复或放弃未提交输入");
     return;
   }
+  if (id === "find" || id === "replace") {
+    find.open(id === "replace");
+    return;
+  }
+  if (mode === "rich") rich?.captureSelection();
   if (id === "toggleSource") {
+    const viewport =
+      mode === "rich" ? rich?.viewportBookmark() : literal?.viewportBookmark();
     mode = mode === "rich" ? "source" : "rich";
     mount(true);
+    if (viewport) {
+      const generation = mountGeneration,
+        atRevision = session.revision;
+      if (mode === "source") literal?.revealOffset(viewport.offset);
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (generation !== mountGeneration || atRevision !== session.revision)
+            return;
+          const coords =
+            mode === "rich"
+              ? rich?.coordinatesAt(viewport.offset)
+              : literal?.coordinatesAt(viewport.offset);
+          if (coords) window.scrollBy(0, coords.top - viewport.top);
+        }),
+      );
+    }
     return;
   }
   if (id === "undo" || id === "redo") {
+    imageRequests.clear();
     session[id]();
+    find.update();
     const owner = session.selection.owner.kind;
     if (owner === "source" && mode !== "source") {
       mode = "source";
@@ -324,33 +491,229 @@ function execute(id: string): void {
     } else notice("PDF 导出需要 macOS 宿主");
     return;
   }
-  if (id === "bold" || id === "italic") {
-    if (
-      session.selection.owner.kind === "code" ||
-      session.selection.owner.kind === "math"
-    ) {
-      notice("字面编辑区域不应用格式命令");
+  if (id === "insertImage") {
+    importImage();
+    return;
+  }
+  if (id === "copyPlain" || id === "copyRich" || id === "copyMarkdown") {
+    const copyMode =
+      id === "copyPlain" ? "plain" : id === "copyRich" ? "rich" : "markdown";
+    if (mode === "source") {
+      if (!literal?.copy(copyMode)) notice("拷贝未完成，请使用系统拷贝快捷键");
+    } else rich?.copy(copyMode);
+    return;
+  }
+  if (id === "tableSelectCells") {
+    rich?.selectCells();
+    return;
+  }
+  if (id.startsWith("table")) {
+    const operation = (
+      {
+        tableAddRow: "addRow",
+        tableDeleteRow: "deleteRow",
+        tableAddColumn: "addColumn",
+        tableDeleteColumn: "deleteColumn",
+        tableAlignLeft: "alignLeft",
+        tableAlignCenter: "alignCenter",
+        tableAlignRight: "alignRight",
+      } as Record<string, string>
+    )[id];
+    if (operation) {
+      const intent = tableIntent(session.source, session.selection, operation);
+      if (intent) {
+        apply(intent);
+        rich?.focus();
+      }
       return;
     }
-    const s = session.selection,
-      a = Math.min(s.anchor.offset, s.head.offset),
-      b = Math.max(s.anchor.offset, s.head.offset),
-      delimiter = id === "bold" ? "**" : "*";
-    apply({
-      patches: [
-        {
-          from: a,
-          to: b,
-          insert: delimiter + session.source.slice(a, b) + delimiter,
+  }
+  if (id === "codeLanguage") {
+    const node = containing(
+      session.source,
+      session.selection.head.offset,
+      "code",
+    );
+    if (!node?.attributes.fence) {
+      notice("只有围栏代码块具有语言标记");
+      return;
+    }
+    const match = /^([`~]+)([^\r\n]*)/.exec(node.raw)!;
+    ask("代码语言", String(node.attributes.lang ?? ""), (value) => {
+      if (/[\r\n`~]/.test(value)) {
+        notice("语言标记不能包含换行或围栏字符");
+        return;
+      }
+      const info = match[2]!,
+        oldLang = String(node.attributes.lang ?? ""),
+        leading = /^\s*/.exec(info)![0],
+        meta = oldLang ? info.slice(leading.length + oldLang.length) : "";
+      const patch = {
+        from: node.from + match[1]!.length,
+        to: node.from + match[0].length,
+        insert: leading + value + meta,
+      };
+      apply({
+        patches: [patch],
+        selection: {
+          ...session.selection,
+          anchor: {
+            ...session.selection.anchor,
+            offset: mapOffset(session.selection.anchor.offset, [patch]),
+          },
+          head: {
+            ...session.selection.head,
+            offset: mapOffset(session.selection.head.offset, [patch]),
+          },
         },
-      ],
-      selection: logical(a + delimiter.length, b + delimiter.length),
+      });
+      rich?.focus();
     });
+    return;
+  }
+  if (id === "inlineMathSource") {
+    const node = containing(
+      session.source,
+      session.selection.head.offset,
+      "inlineMath",
+    );
+    if (node)
+      ask("行内公式源码", node.text ?? "", (value) => {
+        if (/[\r\n]/.test(value)) {
+          notice("行内公式不支持换行");
+          return;
+        }
+        apply(replaceIntent(node.mapping.from, node.mapping.to, value));
+        rich?.focus();
+      });
+    return;
+  }
+  if (
+    session.selection.owner.kind === "code" ||
+    session.selection.owner.kind === "math"
+  ) {
+    notice("字面编辑区域不应用 Markdown 结构命令");
+    return;
+  }
+  if (
+    id === "bold" ||
+    id === "italic" ||
+    id === "strike" ||
+    id === "inlineCode"
+  ) {
+    apply(
+      markIntent(
+        session.source,
+        session.selection,
+        id === "bold"
+          ? "strong"
+          : id === "italic"
+            ? "emphasis"
+            : id === "strike"
+              ? "delete"
+              : "inlineCode",
+      ),
+    );
     rich?.focus();
     return;
   }
-  notice("此命令将在后续结构工作流中接通");
+  if (/^heading[1-6]$/.test(id)) {
+    const intent = headingIntent(
+      session.source,
+      session.selection,
+      Number(id.slice(-1)),
+    );
+    if (intent) apply(intent);
+    rich?.focus();
+    return;
+  }
+  if (
+    [
+      "bulletList",
+      "orderedList",
+      "quote",
+      "codeBlock",
+      "mathBlock",
+      "table",
+    ].includes(id)
+  ) {
+    const intent = blockIntent(session.source, session.selection, id);
+    if (intent) apply(intent);
+    rich?.focus();
+    return;
+  }
+  if (id === "link") {
+    const selection = session.selection;
+    ask("链接地址", "https://", (value) => {
+      const a = Math.min(selection.anchor.offset, selection.head.offset),
+        b = Math.max(selection.anchor.offset, selection.head.offset);
+      apply(
+        replaceIntent(
+          a,
+          b,
+          "[" +
+            (session.source.slice(a, b) || "链接") +
+            "](" +
+            value.replace(/[\r\n]/g, "").replace(/[()]/g, "\\$&") +
+            ")",
+        ),
+      );
+      rich?.focus();
+    });
+    return;
+  }
+  notice("当前位置不支持该命令");
 }
+workspace.addEventListener("contextmenu", (event) => {
+  if (composing || draft) return;
+  event.preventDefault();
+  rich?.captureSelection();
+  document.querySelector(".context-menu")?.remove();
+  const menu = document.createElement("div");
+  menu.className = "context-menu";
+  menu.setAttribute("role", "menu");
+  menu.style.left = Math.min(event.clientX, window.innerWidth - 210) + "px";
+  menu.style.top = Math.min(event.clientY, window.innerHeight - 350) + "px";
+  const actions = [
+    ["加粗", "bold"],
+    ["斜体", "italic"],
+    ["拷贝纯文本", "copyPlain"],
+    ["拷贝富文本", "copyRich"],
+    ["选取单元格区域", "tableSelectCells"],
+    ["插入行", "tableAddRow"],
+    ["删除行", "tableDeleteRow"],
+    ["插入列", "tableAddColumn"],
+    ["删除列", "tableDeleteColumn"],
+    ["靠左对齐", "tableAlignLeft"],
+    ["居中对齐", "tableAlignCenter"],
+    ["靠右对齐", "tableAlignRight"],
+  ];
+  for (const [label, id] of actions) {
+    const button = document.createElement("button");
+    button.textContent = label!;
+    button.setAttribute("role", "menuitem");
+    button.onclick = () => {
+      menu.remove();
+      execute(id!);
+    };
+    menu.append(button);
+  }
+  app.append(menu);
+  menu.querySelector("button")?.focus();
+  menu.onkeydown = (e) => {
+    if (e.key === "Escape") {
+      menu.remove();
+      rich?.focus();
+    }
+  };
+  document.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (!menu.contains(e.target as Node)) menu.remove();
+    },
+    { once: true },
+  );
+});
 modeButton.onclick = () => execute("toggleSource");
 document.querySelector<HTMLButtonElement>("#recover-apply")!.onclick = () => {
   if (!draft) return;
