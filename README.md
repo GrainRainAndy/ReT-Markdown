@@ -1,6 +1,6 @@
 # ReT Markdown
 
-ReT Markdown 已于 2026-10-21 归档旧实现，进入从零重写阶段。当前分支 `rewrite/from-zero` 使用独立根提交；本分支目前只有重新编写的需求、技术方案和参考物核验工具，没有可运行的新编辑器。
+ReT Markdown 已于 2026-10-21 归档旧实现，进入从零重写阶段。当前分支 `rewrite/from-zero` 使用独立根提交，正在实现个人 macOS Markdown 编辑器的首个预览版。已有可运行的最小编辑器构建，完整编辑、图片和 PDF 工作流仍在完成。
 
 重写以本地 macOS Markdown 写作为默认产品定位，以仓库内 **Typora 1.14.10（7786）** 为行为研究对象。旧版的编辑内核、模块边界、依赖清单和验收结论均不作为新实现的既定方案。
 
@@ -13,7 +13,27 @@ ReT Markdown 已于 2026-10-21 归档旧实现，进入从零重写阶段。当�
 5. [验收方案](docs/verification/acceptance-plan.md)：需求追踪、测试层级与失败门槛。
 6. [旧版归档](docs/legacy-archive.md)：归档身份、内容核验与恢复方法。
 
-需求与技术方案状态为**待评审草案**。新设计优先验证结构编辑与源文保真能否同时成立，再扩展完整功能；没有把候选框架的 API 能力当作实现完成。
+需求与技术方案已获批准并进入实现。当前实现与实际验收范围见 [初版验收记录](docs/verification/initial-preview.md)，执行步骤见 [实现计划](docs/superpowers/plans/2026-10-21-initial-rewrite.md)。初版尚未完成交付，未验证的原生输入法、性能和辅助功能不视为通过。
+
+## 本地构建
+
+在 macOS 上使用 Node.js 与 Swift 工具链：
+
+```sh
+npm ci
+bash scripts/build-app.sh
+```
+
+输出为 `build/rewrite/0.2.0-alpha.1/ReT Markdown Preview.app`，使用独立标识 `com.retmarkdown.rewrite.preview`，不会替换旧版应用。`fixtures/preview.md` 提供体验文稿，验收时使用副本。
+
+```sh
+npm test
+npm run typecheck
+npm run test:browser
+swift test --package-path native
+```
+
+浏览器测试需要先安装与锁定的 Playwright 版本匹配的 Chromium（`npx playwright install chromium`）。自动测试覆盖范围与原生交互观察分别记录。
 
 ## 本地参考物
 
@@ -25,4 +45,4 @@ python3 scripts/verify-reference.py
 
 该命令只读取本地参考包并核对来源清单，不启动应用，也不验证交互行为。缺少本地 Typora 副本时会明确失败。
 
-`build/`、`.build/`、`node_modules/` 和 `test-results/` 中的现存内容属于旧版遗留的本地构建、依赖与证据，不属于新产品输入，也不能证明新版本通过测试。保留其原路径以免破坏已有证据或正在使用的旧应用。
+`build/rewrite/` 保存新预览版构建和验收输出。旧构建与证据保留；旧依赖和生成文件已移至 `.legacy-local/`，新工程使用本分支依赖清单重新安装。所有构建和测试成绩均需对应具体源码版本，不能以旧版证据替代。
