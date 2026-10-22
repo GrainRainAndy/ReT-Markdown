@@ -44,6 +44,8 @@ export class DocumentSession {
     this.savedSource = source;
     this.current = Object.freeze({ source, revision: 0, dirty: false, selection: freezeSelection({ anchor: { offset: 0, affinity: 'after' }, head: { offset: 0, affinity: 'after' }, owner: { kind: 'source' }, kind: 'text' }, source.length) });
   }
+  get canUndo(): boolean { return this.history.canUndo; }
+  get canRedo(): boolean { return this.history.canRedo; }
   get source(): string { return this.current.source; }
   get revision(): number { return this.current.revision; }
   get dirty(): boolean { return this.current.dirty; }

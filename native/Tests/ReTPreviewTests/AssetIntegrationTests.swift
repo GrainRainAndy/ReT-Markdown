@@ -144,6 +144,154 @@ final class AssetIntegrationTests: RecoveryIsolatedTestCase {
   XCTAssertTrue(FileManager.default.fileExists(atPath:environment.root.appendingPathComponent(laterPath).path))
   await MainActor.run { XCTAssertFalse(document.state.isDirty); environment.close(document) }
  }
+ func testProtectedReloadRecoveryPreservesNPlusOneStagingAndReferenceMigration() async throws {
+  let document = try await attach("N")
+  let target = environment.root.appendingPathComponent("original.md")
+  let svg = Data("<svg xmlns='http://www.w3.org/2000/svg' width='80' height='40'><circle r='4'/></svg>".utf8)
+  let later = await MainActor.run { LaterAssetPath() }
+  let saved = expectation(description:"N saves while N+1 image is staged")
+  await MainActor.run {
+   let prepare = document.prepareAssetsForSave!
+   document.prepareAssetsForSave = { url,snapshot,complete in
+    prepare(url,snapshot) { result in
+     do {
+      later.value = try document.assets().importImage(svg,fileName:"later.svg",operationID:"later",documentURL:nil)
+      let source = "N+1\n\n![logo][Asset]\n\n> [ASSET]: \(later.value)\n\n[asset]: missing.svg"
+      document.host!.webView.callAsyncJavaScript("const el=document.querySelector('.ProseMirror');const d=new DataTransfer();d.setData('text/markdown',source);el.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:d}));",arguments:["source":source],in:nil,in:.page) { _ in
+       document.host!.flush { response in
+        if case .failure(let error) = response { XCTFail("\(error)") }
+        complete(result)
+       }
+      }
+     } catch { XCTFail("\(error)"); complete(.failure(error)) }
+    }
+   }
+   document.save(to:target,ofType:"net.daringfireball.markdown",for:.saveAsOperation) { error in XCTAssertNil(error); saved.fulfill() }
+  }
+  await fulfillment(of:[saved],timeout:8)
+  let snapshot = try await flush(document)
+  let references = try await manifest(document,snapshot:snapshot)
+  let path = await MainActor.run { later.value }
+  XCTAssertEqual(references,[path]); XCTAssertEqual(try String(contentsOf:target,encoding:.utf8),"N")
+  XCTAssertFalse(FileManager.default.fileExists(atPath:target.deletingLastPathComponent().appendingPathComponent(path).path))
+  let oldID = await MainActor.run { document.state.documentID }
+  await MainActor.run { document.reloadExternal(target) }
+  try await Task.sleep(nanoseconds:500_000_000)
+  let reloadedN = try await flush(document); XCTAssertEqual(reloadedN.source,"N")
+  let records = try FileManager.default.contentsOfDirectory(at:environment.recoveryStore.directory,includingPropertiesForKeys:nil).filter { $0.lastPathComponent.hasSuffix(".current.json") }.compactMap { url -> RecoveryRecord? in
+   let id = url.lastPathComponent.replacingOccurrences(of:".current.json",with:"")
+   return id == oldID ? nil : environment.recoveryStore.latest(documentID:id)
+  }
+  let record = try XCTUnwrap(records.first(where: { $0.snapshot.source == snapshot.source }))
+  let restored = await MainActor.run { () -> MarkdownDocument in
+   let copy = environment.makeDocument(); copy.restore(record)
+   let host = EditorHost(document:copy,entryURL:WebKitRenderTests.entry); copy.host = host; copy.installAssetServices(host)
+   return copy
+  }
+  try await Task.sleep(nanoseconds:1_000_000_000)
+  try await MainActor.run { XCTAssertEqual(try restored.assets().resolve(path:path,documentURL:nil).data,svg) }
+  let destination = environment.root.appendingPathComponent("restored.md")
+  try await save(restored,to:destination)
+  XCTAssertEqual(try String(contentsOf:destination,encoding:.utf8),snapshot.source)
+  XCTAssertEqual(try Data(contentsOf:destination.deletingLastPathComponent().appendingPathComponent(path)),svg)
+  await MainActor.run { environment.close(document); environment.close(restored) }
+ }
+ func testReloadBarrierHoldsBothIdentitiesThroughDelayedRecoveryAndCancellation() async throws {
+  let document = try await attach("old")
+  _ = try await evaluate(document,"const d=new DataTransfer();d.setData('text/markdown','dirty');document.querySelector('.ProseMirror').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:d}));")
+  let old = try await flush(document)
+  let oldEpoch = await MainActor.run { document.state.epoch }
+  let target = environment.root.appendingPathComponent("external.md"); try Data("external".utf8).write(to:target)
+  let queue = environment.recoveryQueue
+  queue.suspend()
+  await MainActor.run { document.reloadExternal(target) }
+  try await Task.sleep(nanoseconds:200_000_000)
+  let locked = try await evaluate(document,"return document.querySelector('#workspace').inert") as? Bool
+  XCTAssertEqual(locked,true)
+  _ = try await evaluate(document,"document.querySelector('.ProseMirror').dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true,data:'中'}));")
+  await MainActor.run { XCTAssertEqual(document.state.epoch,oldEpoch); document.host!.cancelReload() }
+  queue.resume()
+  try await Task.sleep(nanoseconds:200_000_000)
+  let cancelled = try await flush(document); XCTAssertEqual(cancelled,old)
+  await MainActor.run { XCTAssertEqual(document.state.epoch,oldEpoch); document.reloadExternal(target) }
+  try await Task.sleep(nanoseconds:400_000_000)
+  let reloaded = try await flush(document); XCTAssertEqual(reloaded.source,"external")
+  await MainActor.run { XCTAssertNotEqual(document.state.epoch,oldEpoch) }
+  _ = try await evaluate(document,"const d=new DataTransfer();d.setData('text/markdown','after');document.querySelector('.ProseMirror').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:d}));")
+  let edited = try await flush(document)
+  XCTAssertTrue(edited.source.contains("after"))
+  try await save(document,to:environment.root.appendingPathComponent("saved.md"))
+  XCTAssertEqual(try String(contentsOf:environment.root.appendingPathComponent("saved.md"),encoding:.utf8),edited.source)
+  await MainActor.run { environment.close(document) }
+ }
+ func testReloadRetriesLostCommitWithoutReopeningOldInput() async throws {
+  let document = try await attach("old")
+  _ = try await evaluate(document,"""
+  const receive=window.retNative.receive; let dropped=false;
+  window.retNative.receive=e=>{if(e.method==='reloadCommit'&&!dropped){dropped=true;return;}receive(e);};
+  """)
+  let target = environment.root.appendingPathComponent("replacement.md"); try Data("new".utf8).write(to:target)
+  await MainActor.run { document.reloadExternal(target) }
+  try await Task.sleep(nanoseconds:300_000_000)
+  await MainActor.run { XCTAssertEqual(document.state.received.source,"new"); XCTAssertTrue(document.host!.isReplacing) }
+  let locked = try await evaluate(document,"return document.querySelector('#workspace').inert") as? Bool; XCTAssertEqual(locked,true)
+  try await Task.sleep(nanoseconds:1_100_000_000)
+  let snapshot = try await flush(document); XCTAssertEqual(snapshot.source,"new")
+  await MainActor.run { XCTAssertFalse(document.host!.isReplacing); environment.close(document) }
+ }
+ func testReloadTimeoutAndLatePrepareKeepOldSessionAndVersionsCallbackRejectsSafely() async throws {
+  let document = try await attach("old")
+  _ = try await evaluate(document,"""
+  const receive=window.retNative.receive;
+  window.replayReload=()=>{if(window.delayedReload)receive(window.delayedReload);};
+  window.retNative.receive=e=>{if(e.method==='reloadPrepare'){window.delayedReload=e;return;}receive(e);};
+  """)
+  let target = environment.root.appendingPathComponent("replacement.md"); try Data("new".utf8).write(to:target)
+  let oldEpoch = await MainActor.run { document.state.epoch }
+  await MainActor.run { document.reloadExternal(target) }
+  try await Task.sleep(nanoseconds:10_300_000_000)
+  _ = try await evaluate(document,"window.replayReload();")
+  let snapshot = try await flush(document); XCTAssertEqual(snapshot.source,"old")
+  let locked = try await evaluate(document,"return document.querySelector('#workspace').inert") as? Bool; XCTAssertEqual(locked,false)
+  try await MainActor.run {
+   XCTAssertEqual(document.state.epoch,oldEpoch)
+   let originalURL = document.fileURL
+   XCTAssertThrowsError(try document.revert(toContentsOf:target,ofType:"net.daringfireball.markdown"))
+   XCTAssertEqual(document.fileURL,originalURL)
+   XCTAssertEqual(document.state.epoch,oldEpoch); XCTAssertEqual(document.state.received.source,"old")
+   environment.close(document)
+  }
+ }
+ func testRendererTerminationWhileReloadBarrierIsHeldRestoresOldSnapshot() async throws {
+  let document = try await attach("old")
+  _ = try await evaluate(document,"const d=new DataTransfer();d.setData('text/markdown','dirty');document.querySelector('.ProseMirror').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:d}));")
+  let snapshot = try await flush(document)
+  let target = environment.root.appendingPathComponent("replacement.md"); try Data("new".utf8).write(to:target)
+  let queue = environment.recoveryQueue; queue.suspend()
+  await MainActor.run { document.reloadExternal(target) }
+  try await Task.sleep(nanoseconds:200_000_000)
+  await MainActor.run { let host=document.host!; XCTAssertTrue(host.hasReloadBarrier); host.webViewWebContentProcessDidTerminate(host.webView) }
+  queue.resume()
+  try await Task.sleep(nanoseconds:1_000_000_000)
+  let restored = try await flush(document); XCTAssertEqual(restored.source,snapshot.source)
+  await MainActor.run { XCTAssertFalse(document.host!.isReplacing); environment.close(document) }
+ }
+ func testReloadRejectsDiskRechangeDuringHeldRecovery() async throws {
+  let document = try await attach("old")
+  _ = try await evaluate(document,"const d=new DataTransfer();d.setData('text/markdown','dirty');document.querySelector('.ProseMirror').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:d}));")
+  let snapshot = try await flush(document), oldEpoch = await MainActor.run { document.state.epoch }
+  let target = environment.root.appendingPathComponent("changing.md"); try Data("candidate".utf8).write(to:target)
+  let queue = environment.recoveryQueue; queue.suspend()
+  await MainActor.run { document.reloadExternal(target) }
+  try await Task.sleep(nanoseconds:200_000_000)
+  await MainActor.run { XCTAssertTrue(document.host!.hasReloadBarrier) }
+  try Data("newer external".utf8).write(to:target)
+  queue.resume()
+  try await Task.sleep(nanoseconds:300_000_000)
+  let after = try await flush(document); XCTAssertEqual(after,snapshot)
+  await MainActor.run { XCTAssertEqual(document.state.epoch,oldEpoch); XCTAssertFalse(document.host!.isReplacing); environment.close(document) }
+  XCTAssertEqual(try String(contentsOf:target,encoding:.utf8),"newer external")
+ }
  func testVeryTallImageKeepsBothEndsVisibleInActualPrintedPages() async throws {
   let local = environment.root.appendingPathComponent("tall")
   try FileManager.default.createDirectory(at:local,withIntermediateDirectories:true)

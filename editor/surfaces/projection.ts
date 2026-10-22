@@ -134,7 +134,11 @@ export const schema = new Schema({
     code: { toDOM: () => ["code", 0] },
     link: {
       attrs: { url: {} },
-      toDOM: (n) => ["a", { "data-url": n.attrs.url }, 0],
+      toDOM: (n) => [
+        "a",
+        { "data-url": n.attrs.url, title: "⌘单击打开链接；单击编辑" },
+        0,
+      ],
     },
   },
 });
@@ -455,8 +459,51 @@ export class RichProjection {
   deletionRange(
     offset: number,
     backward: boolean,
+    unit: "grapheme" | "word" | "line" = "grapheme",
   ): { from: number; to: number } {
     const pos = this.positionAt(offset);
+    if (unit !== "grapheme") {
+      const resolved = this.doc.resolve(pos);
+      if (resolved.parent.isTextblock) {
+        const text = resolved.parent.textBetween(
+          0,
+          resolved.parent.content.size,
+          "\n",
+          "\ufffc",
+        );
+        const local = resolved.parentOffset;
+        let target: number;
+        if (unit === "line")
+          target = backward
+            ? text.lastIndexOf("\n", local - 1) + 1
+            : text.indexOf("\n", local) < 0
+              ? text.length
+              : text.indexOf("\n", local);
+        else {
+          const segments = [
+            ...new Intl.Segmenter(undefined, { granularity: "word" }).segment(
+              text,
+            ),
+          ];
+          target = backward
+            ? (segments.filter((s) => s.index < local && s.isWordLike).at(-1)
+                ?.index ?? 0)
+            : (() => {
+                const word = segments.find(
+                  (s) => s.index + s.segment.length > local && s.isWordLike,
+                );
+                return word ? word.index + word.segment.length : text.length;
+              })();
+        }
+        return {
+          from: this.sourceAt(resolved.start() + Math.min(local, target)),
+          to: this.sourceAt(
+            resolved.start() + Math.max(local, target),
+            "before",
+          ),
+        };
+      }
+    }
     const run = this.runs.find((r) =>
       backward
         ? r.pos < pos && r.pos + r.length >= pos

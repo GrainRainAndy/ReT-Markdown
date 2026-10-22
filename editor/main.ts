@@ -1,3 +1,6 @@
+import commands from "./protocol/commands.json";
+import { safeLink } from "./protocol/links";
+import { typographyCSS } from "./typography";
 import "./styles.css";
 import { DocumentSession } from "./core/document";
 import type { Patch } from "./core/types";
@@ -28,6 +31,9 @@ import {
 } from "./surfaces/commands";
 import { renderer } from "./render/client";
 import { FindPanel } from "./surfaces/find";
+const tokenStyle = document.createElement("style");
+tokenStyle.textContent = typographyCSS;
+document.head.append(tokenStyle);
 const app = document.querySelector<HTMLElement>("#app")!;
 app.innerHTML =
   '<div id="notice" role="alert" hidden></div><section id="workspace" aria-label="文稿"></section><footer><span id="status" role="status"></span><button id="mode" title="切换源码（⌘⇧M）">源码</button></footer><section id="recovery" role="dialog" aria-label="恢复未提交输入" hidden><h2>恢复未提交输入</h2><p id="recovery-reason"></p><details><summary>原始输入草稿</summary><pre id="draft-content"></pre></details><label>待应用的完整 Markdown<textarea id="recovery-source" spellcheck="false"></textarea></label><button id="recover-apply">应用恢复文本</button><button id="recover-discard">放弃未提交草稿</button></section>';
@@ -47,6 +53,8 @@ let session = new DocumentSession(""),
   resolving = false,
   lastRevision = 0,
   unsubscribe: (() => void) | undefined;
+let zoom = 1;
+let lastCommandState = "";
 let mountGeneration = 0;
 let exportRequest:
   | {
@@ -134,6 +142,7 @@ function importImage(file?: File, source?: "clipboard"): void {
   };
   const id = "asset-" + crypto.randomUUID();
   imageRequests.set(id, bookmark);
+  updateStatus();
   if (file) {
     const reader = new FileReader();
     reader.onload = () => {
@@ -159,9 +168,50 @@ function notice(text: string): void {
 function revision(): number {
   return baseline + session.revision;
 }
+function commandEnabled(id: string): boolean {
+  if (host.replacing || composing || draft) return false;
+  if (id === "undo") return session.canUndo || imageRequests.size > 0;
+  if (id === "redo") return session.canRedo;
+  const at = session.selection.head.offset,
+    owner = session.selection.owner.kind;
+  if (id === "codeLanguage")
+    return !!containing(session.source, at, "code")?.attributes.fence;
+  if (id === "inlineMathSource")
+    return !!containing(session.source, at, "inlineMath");
+  if (id.startsWith("table") && id !== "table")
+    return (
+      !!containing(session.source, at, "table") &&
+      (id !== "tableSelectCells" || mode === "rich")
+    );
+  if (id === "zoomIn") return zoom < 2;
+  if (id === "zoomOut") return zoom > 0.5;
+  if (id === "zoomReset") return zoom !== 1;
+  if (
+    mode === "rich" &&
+    (owner === "code" || owner === "math") &&
+    commands.some((c) => c.id === id && c.group === "format")
+  )
+    return false;
+  return true;
+}
+function publishCommandState(): void {
+  const enabled = Object.fromEntries(
+    commands.map((c) => [c.id, commandEnabled(c.id)]),
+  );
+  const serialized = JSON.stringify(enabled);
+  if (serialized !== lastCommandState) {
+    lastCommandState = serialized;
+    host.send("commandState", { enabled });
+  }
+}
+function openLink(url: string): void {
+  if (safeLink(url)) host.send("openLink", { url });
+  else notice("此链接地址不支持安全打开");
+}
 function updateStatus(): void {
   status.textContent = `${draft ? "输入待恢复" : composing ? "正在输入" : session.dirty ? "未保存" : "已保存基线"} · ${mode === "rich" ? "实时" : "源码"} · ${session.source.length} 字符${host.native ? (durable >= revision() ? " · 已持久恢复" : received >= revision() ? " · 已接收" : "") : " · 浏览器内存文稿"}`;
   modeButton.textContent = mode === "rich" ? "源码" : "实时";
+  publishCommandState();
 }
 function composition(active: boolean): void {
   composing = active;
@@ -194,7 +244,7 @@ function recover(
 }
 function showRecovery(): void {
   recoveryPanel.hidden = !draft;
-  workspace.inert = !!draft;
+  workspace.inert = !!draft || host.replacing;
   if (!draft) return;
   document.querySelector("#recovery-reason")!.textContent = draft.reason;
   document.querySelector("#draft-content")!.textContent = draft.content;
@@ -202,6 +252,7 @@ function showRecovery(): void {
   updateStatus();
 }
 function apply(intent: Intent, group?: string): void {
+  if (host.replacing) return;
   if (draft && !resolving) {
     notice("请先恢复或放弃未提交输入");
     return;
@@ -264,13 +315,13 @@ function mount(focus = false): void {
       image: importImage,
       source: () => session.source,
       range: () => mapText(session.source, 0),
-      change: (patch, anchor, head) =>
+      change: (patch, anchor, head, origin) =>
         apply(
           {
             patches: [patch],
             selection: logical(anchor, head, { kind: "source" }),
           },
-          "source-typing",
+          origin === "typing" ? "source-typing" : undefined,
         ),
       select: (anchor, head) =>
         session.setSelection(logical(anchor, head, { kind: "source" })),
@@ -303,6 +354,7 @@ function load(payload: Record<string, unknown>): void {
   session.setSelection(logical(session.source.startsWith("\uFEFF") ? 1 : 0));
   baseline = Number(payload.revision) || 0;
   lastRevision = 0;
+  lastCommandState = "";
   received = baseline;
   durable = -1;
   session.markSaved(
@@ -341,6 +393,20 @@ function appearance(mode: string): void {
 function receive(message: Envelope): void {
   const p = message.payload;
   switch (message.method) {
+    case "reloadPrepare":
+      workspace.inert = true;
+      imageRequests.clear();
+      queuedAssets = [];
+      host.send(
+        "reloadReady",
+        { status: "ready", source: session.source, revision: revision() },
+        message.requestId,
+      );
+      break;
+    case "reloadCancel":
+      workspace.inert = !!draft;
+      refresh();
+      break;
     case "load":
       load(p);
       break;
@@ -377,7 +443,7 @@ function receive(message: Envelope): void {
       }
       break;
     case "assetResult": {
-      if (composing || draft) {
+      if (composing || draft || host.replacing) {
         queuedAssets.push(message);
         break;
       }
@@ -461,6 +527,22 @@ function receive(message: Envelope): void {
   }
 }
 function execute(id: string): void {
+  if (host.replacing) return;
+  if (id.startsWith("zoom")) {
+    zoom =
+      id === "zoomReset"
+        ? 1
+        : Math.max(
+            0.5,
+            Math.min(
+              2,
+              Math.round((zoom + (id === "zoomIn" ? 0.1 : -0.1)) * 10) / 10,
+            ),
+          );
+    workspace.style.setProperty("--edit-zoom", String(zoom));
+    updateStatus();
+    return;
+  }
   if (composing) {
     if (!queued.includes(id)) queued.push(id);
     notice("等待输入法提交后执行");
@@ -475,6 +557,7 @@ function execute(id: string): void {
     return;
   }
   if (mode === "rich") rich?.captureSelection();
+  if (!commandEnabled(id)) return;
   if (id === "toggleSource") {
     const viewport =
       mode === "rich" ? rich?.viewportBookmark() : literal?.viewportBookmark();
@@ -659,8 +742,9 @@ function execute(id: string): void {
     return;
   }
   if (
-    session.selection.owner.kind === "code" ||
-    session.selection.owner.kind === "math"
+    mode === "rich" &&
+    (session.selection.owner.kind === "code" ||
+      session.selection.owner.kind === "math")
   ) {
     notice("字面编辑区域不应用 Markdown 结构命令");
     return;
@@ -709,6 +793,10 @@ function execute(id: string): void {
   ) {
     const intent = blockIntent(session.source, session.selection, id);
     if (intent) apply(intent);
+    else if (id === "mathBlock")
+      notice(
+        "数学内容含有闭合分隔符，无法安全创建数学块；请在源码模式调整分隔符",
+      );
     rich?.focus();
     return;
   }
@@ -744,27 +832,38 @@ workspace.addEventListener("contextmenu", (event) => {
   menu.setAttribute("role", "menu");
   menu.style.left = Math.min(event.clientX, window.innerWidth - 210) + "px";
   menu.style.top = Math.min(event.clientY, window.innerHeight - 350) + "px";
-  const actions = [
-    ["加粗", "bold"],
-    ["斜体", "italic"],
-    ["拷贝纯文本", "copyPlain"],
-    ["拷贝富文本", "copyRich"],
-    ["选取单元格区域", "tableSelectCells"],
-    ["插入行", "tableAddRow"],
-    ["删除行", "tableDeleteRow"],
-    ["插入列", "tableAddColumn"],
-    ["删除列", "tableDeleteColumn"],
-    ["靠左对齐", "tableAlignLeft"],
-    ["居中对齐", "tableAlignCenter"],
-    ["靠右对齐", "tableAlignRight"],
-  ];
-  for (const [label, id] of actions) {
+  const targetLink = (event.target as Element).closest<HTMLAnchorElement>(
+    "a[data-url]",
+  );
+  if (targetLink && safeLink(targetLink.dataset.url ?? "")) {
     const button = document.createElement("button");
-    button.textContent = label!;
+    button.textContent = "打开链接（⌘单击）";
+    button.setAttribute("role", "menuitem");
+    button.onclick = () => {
+      openLink(targetLink.dataset.url!);
+      menu.remove();
+    };
+    menu.append(button);
+  }
+  const actions = commands.filter(
+    (c) =>
+      [
+        "bold",
+        "italic",
+        "strike",
+        "inlineCode",
+        "copyPlain",
+        "copyRich",
+      ].includes(c.id) || c.group === "table",
+  );
+  for (const action of actions) {
+    const button = document.createElement("button");
+    button.textContent = action.title;
+    button.disabled = !commandEnabled(action.id);
     button.setAttribute("role", "menuitem");
     button.onclick = () => {
       menu.remove();
-      execute(id!);
+      execute(action.id);
     };
     menu.append(button);
   }
@@ -809,18 +908,55 @@ document.querySelector<HTMLButtonElement>("#recover-discard")!.onclick = () => {
   showRecovery();
   mount(true);
 };
-document.addEventListener("keydown", (event) => {
-  if (event.isComposing || composing) return;
-  if (!(event.metaKey || event.ctrlKey)) return;
-  const key = event.key.toLowerCase();
-  let id: string | undefined;
-  if (key === "s") id = event.shiftKey ? "saveAs" : "save";
-  if (key === "m" && event.shiftKey) id = "toggleSource";
-  if (key === "o") id = "open";
-  if (key === "f") id = event.altKey ? "replace" : "find";
-  if (id) {
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.isComposing || composing) return;
+    if (!(event.metaKey || event.ctrlKey)) return;
+    const key = event.key.toLowerCase();
+    const definition = commands.find(
+      (c) =>
+        c.key &&
+        c.key === key &&
+        c.modifiers.includes("shift") === event.shiftKey &&
+        c.modifiers.includes("alt") === event.altKey,
+    );
+    const id = definition?.id;
+    if (id) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      execute(id);
+    }
+  },
+  true,
+);
+for (const type of [
+  "beforeinput",
+  "compositionstart",
+  "compositionupdate",
+  "compositionend",
+  "paste",
+  "drop",
+  "keydown",
+]) {
+  workspace.addEventListener(
+    type,
+    (event) => {
+      if (host.replacing) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    },
+    true,
+  );
+}
+workspace.addEventListener("click", (event) => {
+  const link = (event.target as Element).closest<HTMLAnchorElement>(
+    "a[data-url]",
+  );
+  if (link && (event.metaKey || event.ctrlKey)) {
     event.preventDefault();
-    execute(id);
+    openLink(link.dataset.url ?? "");
   }
 });
 if (host.native) host.start();

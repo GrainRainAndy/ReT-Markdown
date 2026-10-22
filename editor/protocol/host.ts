@@ -27,6 +27,13 @@ export class HostBridge {
   epoch = "";
   private sequence = 0;
   private loaded = false;
+  private reload:
+    { id: string; epoch: string; payload: Record<string, unknown> } | undefined;
+  private cancelled = new Set<string>();
+  private completed?: string;
+  get replacing(): boolean {
+    return !!this.reload;
+  }
   constructor(
     private handler: (message: Envelope) => void,
     private canLoad: () => boolean = () => true,
@@ -69,6 +76,64 @@ export class HostBridge {
       Array.isArray(m.payload)
     )
       return;
+    const matching =
+      this.loaded && m.documentId === this.documentId && m.epoch === this.epoch;
+    if (m.method === "reloadPrepare" && matching) {
+      if (this.cancelled.has(m.requestId)) return;
+      const p = m.payload.load as Record<string, unknown> | undefined;
+      if (
+        this.reload ||
+        !p ||
+        typeof p.source !== "string" ||
+        !Number.isSafeInteger(p.revision) ||
+        Number(p.revision) < 0 ||
+        typeof m.payload.epoch !== "string" ||
+        m.payload.epoch === this.epoch ||
+        !this.canLoad()
+      ) {
+        this.send(
+          "reloadReady",
+          { status: "pending", reason: "input or replacement pending" },
+          m.requestId,
+        );
+        return;
+      }
+      this.reload = {
+        id: m.requestId,
+        epoch: m.payload.epoch,
+        payload: structuredClone(p),
+      };
+      this.handler(m); // locks input synchronously before acknowledging the snapshot
+      return;
+    }
+    if (m.method === "reloadCancel" && matching) {
+      this.cancelled.add(m.requestId);
+      if (this.reload?.id === m.requestId) {
+        this.reload = undefined;
+        this.handler(m);
+      }
+      return;
+    }
+    if (m.method === "reloadCommit" && m.documentId === this.documentId) {
+      if (this.completed === m.requestId && matching) {
+        this.send("reloadComplete", {}, m.requestId);
+        return;
+      }
+      const transaction = this.reload;
+      if (
+        !transaction ||
+        transaction.id !== m.requestId ||
+        transaction.epoch !== m.epoch
+      )
+        return;
+      this.epoch = transaction.epoch;
+      this.reload = undefined;
+      this.completed = m.requestId;
+      this.handler({ ...m, method: "load", payload: transaction.payload });
+      this.send("reloadComplete", {}, m.requestId);
+      return;
+    }
+    if (this.reload && m.method === "load") return;
     if (m.method === "load") {
       if (
         this.loaded &&

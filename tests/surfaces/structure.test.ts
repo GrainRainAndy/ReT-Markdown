@@ -9,7 +9,9 @@ import {
   markIntent,
   clipboardRange,
   literalPatch,
+  blockIntent,
 } from "../../editor/surfaces/commands";
+import { RichProjection } from "../../editor/surfaces/projection";
 import { buildProjection } from "../../editor/syntax/projection";
 const apply = (source: string, intent: any) => {
   const session = new DocumentSession(source);
@@ -97,4 +99,80 @@ it("preserves reversed range and all untouched bytes for mixed ordered-task subt
   expect(intent.selection.anchor.offset).toBeGreaterThan(
     intent.selection.head.offset,
   );
+});
+
+it("grows literal fences to preserve all intended body text and container ownership", () => {
+  for (const eol of ["\n", "\r\n"])
+    for (const prefix of ["", "> ", ">   "]) {
+      const source = [
+        prefix + "~~~js",
+        prefix + "a",
+        prefix + "b",
+        prefix + "~~~",
+      ].join(eol);
+      const find = (nodes: any[]): any =>
+        nodes.find((n) => n.type === "code") ??
+        nodes.map((n) => find(n.children)).find(Boolean);
+      const node = find(buildProjection(source).blocks);
+      const body = "a\n~~~\n~~~~~~\nb\n";
+      const intent = literalPatch(
+        source,
+        node,
+        body,
+        body.length - 2,
+        body.length - 2,
+        { kind: "code", id: "code" } as any,
+      );
+      const next = apply(source, intent);
+      expect(find(buildProjection(next).blocks).text).toBe(body);
+      const session = new DocumentSession(source);
+      session.apply(intent.patches, intent.selection);
+      expect(session.undo()).toBe(true);
+      expect(session.source).toBe(source);
+      expect(next).toContain("~~~~~~~js");
+      expect(next.includes("\r\n")).toBe(eol === "\r\n");
+    }
+});
+it("code insertion chooses a fence that cannot close inside selected content", () => {
+  const source = "a\n```\n`````\nb";
+  const intent = blockIntent(source, logical(0, source.length), "codeBlock")!;
+  const next = apply(source, intent);
+  const code = buildProjection(next).blocks.find((n) => n.type === "code")!;
+  expect(code.text).toBe(source + "\n");
+});
+it("math collision refuses rather than silently truncating the literal body", () => {
+  const source = "$$\na\nb\n$$",
+    node = buildProjection(source).blocks[0]!;
+  expect(() =>
+    literalPatch(source, node, "a\n$$\nb\n", 2, 2, {
+      kind: "math",
+      id: "m",
+    } as any),
+  ).toThrow();
+  expect(blockIntent("a\n$$\nb", logical(0, 7), "mathBlock")).toBeNull();
+});
+it("refuses longer math closing runs and CRLF math creation collisions", () => {
+  for (const source of ["a\n$$$\nb", "a\r\n$$\r\nb", "a\r\n$$$$ \r\nb"])
+    expect(
+      blockIntent(source, logical(0, source.length), "mathBlock"),
+    ).toBeNull();
+});
+it("preserves a fenced literal inside nested list and quote containers", () => {
+  const source =
+    "- item\r\n  > ~~~lang\r\n  > a\r\n  > b\r\n  > ~~~\r\n\r\nend";
+  const projection = new RichProjection(source);
+  const code = [...projection.records.values()].find(
+    (r) => r.node.type === "code",
+  )!.node;
+  const intent = literalPatch(source, code, "a\n~~~~\nb\n", 7, 7, {
+    kind: "code",
+    nodeId: "nested",
+  });
+  const next = apply(source, intent);
+  const after = new RichProjection(next);
+  expect(
+    [...after.records.values()].find((r) => r.node.type === "code")!.node.text,
+  ).toBe("a\n~~~~\nb\n");
+  expect(after.doc.firstChild?.type.name).toBe("bullet_list");
+  expect(next.endsWith("\r\n\r\nend")).toBe(true);
 });

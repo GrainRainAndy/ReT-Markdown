@@ -12,10 +12,49 @@ import WebKit
   get { assetScheme.resolve }
   set { assetScheme.resolve = newValue }
  }
+ var commandEnabled: [String:Bool] = [:]
  private var ready = false
  private var invalidated = false
  private var pending: [String: (Result<Snapshot, Error>) -> Void] = [:]
  private var seen = Set<String>()
+ private var reloadID: String?
+ private var reloadPrepared = false
+ private var reloadCommitted = false
+ private var reloadCompletion: ((Result<Snapshot, Error>) -> Void)?
+ func prepareReload(epoch: String, payload: [String:Any], completion: @escaping (Result<Snapshot, Error>) -> Void) {
+  guard ready, !invalidated, reloadID == nil else { completion(.failure(HostFailure.unavailable("编辑器不能开始重载。"))); return }
+  let id = UUID().uuidString
+  reloadID = id; reloadPrepared = false; reloadCommitted = false; reloadCompletion = completion
+  send("reloadPrepare", payload: ["epoch":epoch,"load":payload], requestID:id)
+  DispatchQueue.main.asyncAfter(deadline:.now() + 10) { [weak self] in
+   guard let self, self.reloadID == id, !self.reloadCommitted else { return }
+   self.cancelReload(error:HostFailure.unavailable("重载屏障超时；已保留原文稿。"))
+  }
+ }
+ var isReplacing: Bool { reloadID != nil }
+ var hasReloadBarrier: Bool { reloadID != nil && reloadPrepared && !reloadCommitted }
+ func cancelReload(error: Error = CocoaError(.userCancelled)) {
+  guard let id = reloadID, !reloadCommitted else { return }
+  send("reloadCancel", payload:[:], requestID:id)
+  reloadID = nil; reloadPrepared = false
+  let callback = reloadCompletion; reloadCompletion = nil; callback?(.failure(error))
+ }
+ func commitReload() {
+  guard let id = reloadID, reloadPrepared else { return }
+  reloadCommitted = true
+  resendReloadCommit(id)
+ }
+ private func resendReloadCommit(_ id: String) {
+  guard !invalidated, reloadID == id, reloadCommitted else { return }
+  send("reloadCommit", payload:[:], requestID:id)
+  // A lost completion never unlocks old input or rolls the native epoch back.
+  DispatchQueue.main.asyncAfter(deadline:.now() + 1) { [weak self] in self?.resendReloadCommit(id) }
+ }
+ private func invalidateReload() {
+  let callback = reloadCompletion; reloadCompletion = nil
+  reloadID = nil; reloadPrepared = false; reloadCommitted = false
+  callback?(.failure(HostFailure.stale))
+ }
  private var assetRequests: [String: (Snapshot, (Result<[String], Error>) -> Void)] = [:]
  var onSessionInvalidated: (() -> Void)?
  var onImportImage: ((BridgeEnvelope) -> Void)?
@@ -56,7 +95,7 @@ import WebKit
   ready = true
   send("load", payload: document.loadPayload)
  }
- func command(_ id: String) { if ready { send("command", payload: ["id":id]) } }
+ func command(_ id: String) { if ready, commandEnabled[id] == true { send("command", payload: ["id":id]) } }
  func flush(_ completion: @escaping (Result<Snapshot, Error>) -> Void) {
   if document?.state.recoveryDraft != nil { completion(.failure(HostFailure.pending("recovery draft"))); return }
   guard ready, !invalidated else { completion(.failure(HostFailure.unavailable("编辑器尚未就绪；已接收的恢复副本仍保留。"))); return }
@@ -77,6 +116,8 @@ import WebKit
   }
  }
  private func cancelServices() {
+  invalidateReload()
+  commandEnabled = [:]
   onSessionInvalidated?()
   let requests = assetRequests.values; assetRequests.removeAll()
   for (_,completion) in requests { completion(.failure(HostFailure.stale)) }
@@ -93,6 +134,18 @@ import WebKit
   guard !invalidated, let document else { return }
   let trusted = message.frameInfo.isMainFrame && message.frameInfo.request.url?.standardizedFileURL == entryURL.standardizedFileURL
   guard let envelope = BridgeEnvelope.parse(message.body, trusted: trusted, documentID: document.state.documentID, epoch: document.state.epoch) else { return }
+  if envelope.method == "reloadReady" {
+   guard envelope.requestID == reloadID, !reloadPrepared, !reloadCommitted else { return }
+   guard envelope.payload["status"] as? String == "ready", document.state.recoveryDraft == nil else { cancelReload(error:HostFailure.pending("composition or recovery draft")); return }
+   let snapshot = Snapshot(source:envelope.payload["source"] as! String, revision:BridgeEnvelope.integer(envelope.payload["revision"])!)
+   guard snapshot == document.state.received || document.accept(snapshot) else { cancelReload(error:HostFailure.stale); return }
+   reloadPrepared = true
+   let callback = reloadCompletion; reloadCompletion = nil; callback?(.success(snapshot)); return
+  }
+  if envelope.method == "reloadComplete" {
+   guard envelope.requestID == reloadID, reloadCommitted else { return }
+   reloadID = nil; reloadPrepared = false; reloadCommitted = false; return
+  }
   if envelope.method == "assetManifest" {
    guard let (snapshot, callback) = assetRequests.removeValue(forKey:envelope.requestID) else { return }
    guard BridgeEnvelope.integer(envelope.payload["revision"]) == snapshot.revision else { callback(.failure(HostFailure.stale)); return }
@@ -119,6 +172,9 @@ import WebKit
   case "recoveryDraft":
    let draft = envelope.payload["draft"] is NSNull ? nil : RecoveryDraft.parse(envelope.payload["draft"]!)
    if !document.acceptRecoveryDraft(draft) { send("error", payload: ["message":"恢复草稿基于过期版本。","operation":"recoveryDraft"], requestID: envelope.requestID) }
+  case "commandState": commandEnabled = envelope.payload["enabled"] as! [String:Bool]
+  case "openLink":
+   if let url = Self.externalURL(envelope.payload["url"] as! String) { NSWorkspace.shared.open(url) }
   case "save": document.save(nil)
   case "saveAs": document.saveAs(nil)
   case "new": NSDocumentController.shared.newDocument(nil)
@@ -135,10 +191,15 @@ import WebKit
   if let onExportPDF { onExportPDF() }
   else { document?.report(HostFailure.unavailable("PDF 导出服务尚未安装。"), operation: "exportPDF") }
  }
+ static func externalURL(_ value: String) -> URL? {
+  guard !value.isEmpty, !value.unicodeScalars.contains(where: { $0.value <= 32 || $0.value == 127 }), let url = URL(string:value), let scheme = url.scheme?.lowercased() else { return nil }
+  if scheme == "mailto" { return url.path.isEmpty ? nil : url }
+  return ["http","https"].contains(scheme) && !(url.host ?? "").isEmpty ? url : nil
+ }
  func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
   guard let url = action.request.url else { decisionHandler(.cancel); return }
   if action.targetFrame?.isMainFrame == true && url.standardizedFileURL == entryURL.standardizedFileURL { decisionHandler(.allow); return }
-  if action.navigationType == .linkActivated, ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "") { NSWorkspace.shared.open(url) }
+  if action.navigationType == .linkActivated, Self.externalURL(url.absoluteString) != nil { NSWorkspace.shared.open(url) }
   decisionHandler(.cancel)
  }
  func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {

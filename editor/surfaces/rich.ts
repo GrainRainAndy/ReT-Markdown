@@ -317,7 +317,7 @@ export class RichSurface {
           : mapText("", 0);
       },
       change: () => {},
-      editText: (text, anchor, head) => {
+      editText: (text, anchor, head, origin) => {
         const r = getRecord();
         if (!r) return;
         const intent = literalPatch(
@@ -330,7 +330,7 @@ export class RichSurface {
         );
         this.options.apply(
           intent,
-          this.composing ? undefined : "literal-typing",
+          origin === "typing" ? "literal-typing" : undefined,
         );
       },
       select: (anchor, head) => {
@@ -557,21 +557,6 @@ export class RichSurface {
   private key(event: KeyboardEvent): boolean {
     if (event.isComposing || this.composing) return false;
     this.captureSelection();
-    const mod = event.metaKey || event.ctrlKey;
-    if (mod) {
-      const key = event.key.toLowerCase();
-      if (key === "z") {
-        event.preventDefault();
-        this.options.command(event.shiftKey ? "redo" : "undo");
-        return true;
-      }
-      if (key === "b" || key === "i") {
-        event.preventDefault();
-        this.options.command(key === "b" ? "bold" : "italic");
-        return true;
-      }
-      if (key === "a") return false;
-    }
     const selection = this.options.session.selection;
     if (
       ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key) &&
@@ -668,6 +653,24 @@ export class RichSurface {
       event.preventDefault();
       const range = clipboardRange(this.options.session.source, selection);
       this.options.apply(replaceIntent(range.from, range.to, ""));
+      return true;
+    }
+    if (
+      (event.key === "Backspace" || event.key === "Delete") &&
+      (event.altKey || event.metaKey)
+    ) {
+      event.preventDefault();
+      const s = this.options.session.selection;
+      const range = this.projection.deletionRange(
+        s.head.offset,
+        event.key === "Backspace",
+        event.metaKey ? "line" : "word",
+      );
+      const safe = clipboardRange(
+        this.options.session.source,
+        logical(range.from, range.to, s.owner),
+      );
+      this.options.apply(replaceIntent(safe.from, safe.to, "", s.owner));
       return true;
     }
     if (event.key === "Enter" || event.key === "Backspace") {
@@ -771,7 +774,8 @@ export class RichSurface {
       cells?.markdown ??
       this.options.session.source.slice(range.from, range.to);
     if (!markdown && !cells) return false;
-    const plain = cells?.text ?? plainMarkdown(markdown);
+    const plain =
+      cells?.text ?? plainMarkdown(markdown, this.options.session.source);
     event.preventDefault();
     event.clipboardData.setData(
       "text/plain",
@@ -779,7 +783,10 @@ export class RichSurface {
     );
     event.clipboardData.setData("text/markdown", markdown);
     if (this.copyMode === "rich")
-      event.clipboardData.setData("text/html", clipboardHTML(markdown));
+      event.clipboardData.setData(
+        "text/html",
+        clipboardHTML(markdown, this.options.session.source),
+      );
     this.copyMode = "markdown";
     if (cut) {
       if (cells && s.cellRange) {

@@ -56,3 +56,80 @@ it("renders missing and remote image placeholders with their readable path and c
   expect(html).not.toContain('<img src="https:');
   expect(html).not.toContain("overflow:hidden");
 });
+
+it("shares recursive first-definition reference semantics across projection, assets and clipboard", async () => {
+  const { RichProjection } = await import("../../editor/surfaces/projection");
+  const { collectAssetReferences } =
+    await import("../../editor/render/document");
+  const { plainMarkdown, clipboardHTML } =
+    await import("../../editor/surfaces/clipboard");
+  for (const suffix of ["[Asset Label]", "[]", ""]) {
+    const source = `> [ASSET   label]: images/first.png\n\n[asset label]: images/second.png\n\n![Asset Label]${suffix} and [Asset Label]${suffix}`;
+    const projection = new RichProjection(source);
+    let imageURL = "",
+      linkURL = "";
+    projection.doc.descendants((n) => {
+      if (n.type.name === "image") imageURL = n.attrs.url;
+      for (const m of n.marks)
+        if (m.type.name === "link") linkURL = m.attrs.url;
+    });
+    expect(imageURL).toBe("images/first.png");
+    expect(linkURL).toBe("images/first.png");
+    expect(collectAssetReferences(source)).toEqual(["images/first.png"]);
+    expect(clipboardHTML(source)).toContain(
+      'data-asset-path="images/first.png"',
+    );
+    expect(
+      plainMarkdown(
+        `hello ![alt](images/x.png) and ![Asset Label]${suffix}\n\n[Asset Label]: images/first.png`,
+      ),
+    ).toContain("hello alt and Asset Label");
+    const changed = new RichProjection(
+      source.replace("images/first.png", "images/changed.png"),
+    );
+    changed.doc.descendants((n) => {
+      if (n.type.name === "image")
+        expect(n.attrs.url).toBe("images/changed.png");
+    });
+  }
+});
+it("exports table header semantics and each column alignment", () => {
+  const html = renderDocument("| L | R |\n| :-- | --: |\n| a | b |");
+  expect(html).toContain('<th style="text-align:left">L</th>');
+  expect(html).toContain('<th style="text-align:right">R</th>');
+  expect(html).toContain('<td style="text-align:right">b</td>');
+});
+it("print CSS shares approved typography tokens while keeping its searchable CJK overrides", async () => {
+  const { printCSS } = await import("../../editor/render/document");
+  expect(printCSS).toContain("--h1:2.25em");
+  expect(printCSS).toContain("--h2:1.75em");
+  expect(printCSS).toContain("--block-gap:0.8em");
+  expect(printCSS).toContain('"Hiragino Sans GB"');
+});
+it("shared block spacing reaches tables, literals, and all heading levels", async () => {
+  const { printCSS } = await import("../../editor/render/document");
+  expect(printCSS).toContain(
+    "h1,h2,h3,h4,h5,h6{line-height:1.25;margin:var(--block-gap) 0}",
+  );
+  expect(printCSS).toContain(
+    "pre,blockquote,table{margin:0 0 var(--block-gap)}",
+  );
+  expect(printCSS).toContain("font:var(--body-size)/var(--body-leading)");
+});
+it("semantic clipboard resolves selected reference fragments against document-wide first definitions", async () => {
+  const { plainMarkdown, clipboardHTML } =
+    await import("../../editor/surfaces/clipboard");
+  const context =
+    "> [asset]: images/first.png\n\n[asset]: images/second.png\n\n[link]: https://example.com";
+  for (const fragment of ["![alt][asset]", "![asset][]", "![asset]"]) {
+    expect(plainMarkdown(fragment, context)).toBe(
+      fragment.includes("alt") ? "alt" : "asset",
+    );
+    expect(clipboardHTML(fragment, context)).toContain(
+      'data-asset-path="images/first.png"',
+    );
+  }
+  expect(clipboardHTML("[go][link]", context)).toContain(
+    'href="https://example.com"',
+  );
+});

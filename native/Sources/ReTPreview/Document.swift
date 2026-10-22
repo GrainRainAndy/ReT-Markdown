@@ -25,7 +25,6 @@ import AppKit
   let draft: RecoveryDraft?
   init(_ state: DocumentState) { epoch = state.epoch; snapshot = state.received; draft = state.recoveryDraft }
  }
- private var reloadAuthorization: ReloadAuthorization?
  /// Task 4 installs an asset transaction here. It must finish resources before calling success.
  /// The snapshot is frozen; failure must leave fileURL and state.saved unchanged.
  var prepareAssetsForSave: ((URL, Snapshot, @escaping (Result<Void, Error>) -> Void) -> Void)?
@@ -59,6 +58,12 @@ import AppKit
   host = editor
   installAssetServices(editor)
   window.contentView = editor.webView
+ }
+ override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+  if item.action == #selector(editorCommand(_:)), let menu = item as? NSMenuItem, let id = menu.representedObject as? String {
+   return host?.commandEnabled[id] ?? false
+  }
+  return super.validateUserInterfaceItem(item)
  }
  override func read(from data: Data, ofType typeName: String) throws {
   let source = try UTF8File.decode(data)
@@ -120,7 +125,7 @@ import AppKit
   }
  }
  override func save(to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType, completionHandler: @escaping (Error?) -> Void) {
-  guard !closed, !closeActive || closeSaveCompletion != nil else {
+  guard !closed, host?.isReplacing != true, !closeActive || closeSaveCompletion != nil else {
    completionHandler(CocoaError(.userCancelled))
    advanceSaveQueue()
    return
@@ -242,24 +247,13 @@ import AppKit
   super.close()
  }
  override func revertToSaved(_ sender: Any?) {
-  host?.flush { [weak self] result in
-   guard let self else { return }
-   switch result {
-   case .success:
-    self.preserveBeforeReload {
-     self.reloadAuthorization = ReloadAuthorization(self.state); self.performSystemRevert(sender)
-    }
-   case .failure(let error): self.report(error, operation: "revert")
-   }
-  }
+  guard let url = fileURL else { return }
+  reloadExternal(url)
  }
- fileprivate func performSystemRevert(_ sender: Any?) { super.revertToSaved(sender) }
  override func revert(toContentsOf url: URL, ofType typeName: String) throws {
-  let authorization = reloadAuthorization
-  reloadAuthorization = nil
-  guard authorization == ReloadAuthorization(state), state.recoveryDraft == nil else { throw HostFailure.stale }
-  try super.revert(toContentsOf: url, ofType: typeName)
-  host?.load()
+  // A Versions URL can be a historical temporary file. Without an acknowledged
+  // transaction this synchronous callback must leave both sessions untouched.
+  throw HostFailure.pending("此 Alpha 尚不支持历史版本恢复；“恢复到已存版本”只读取当前已保存文件，不恢复历史版本")
  }
  override func presentedItemDidChange() {
   DispatchQueue.main.async { [weak self] in self?.checkExternalChange() }
@@ -286,34 +280,55 @@ import AppKit
    }
   }
  }
- private func preserveBeforeReload(_ continuation: @escaping () -> Void) {
-  guard !closed else { return }
-  guard state.recoveryDraft == nil else { report(HostFailure.pending("recovery draft"), operation: "reload"); return }
+ private func preserveBeforeReload(_ continuation: @escaping (Result<Void, Error>) -> Void) {
+  guard !closed, state.recoveryDraft == nil else { continuation(.failure(HostFailure.pending("recovery draft"))); return }
   let protectedState = ReloadAuthorization(state)
-  guard state.isDirty else { continuation(); return }
-  // A separate record survives subsequent checkpoints and preserves the pre-revert source.
-  let record = RecoveryRecord(documentID: UUID().uuidString, fileURL: fileURL, snapshot: state.received, date: Date(), recoveryDraft: state.recoveryDraft)
-  let store = recovery
-  recoveryQueue.async { [weak self] in
-   do {
-    try store.write(record)
-    DispatchQueue.main.async {
-     guard let self, !self.closed else { return }
-     guard protectedState == ReloadAuthorization(self.state) else {
-      self.report(HostFailure.unavailable("恢复写入期间收到新的输入；本次重载已取消，请完成输入后重试。"), operation: "reload")
-      return
+  guard state.isDirty else { continuation(.success(())); return }
+  let record = RecoveryRecord(documentID:UUID().uuidString,fileURL:fileURL,snapshot:state.received,date:Date(),recoveryDraft:state.recoveryDraft)
+  do {
+   let (bindingURL, binding) = try assets().recoveryBinding(for:record.documentID,originalURL:fileURL)
+   let store = recovery
+   recoveryQueue.async { [weak self] in
+    do {
+     try FileManager.default.createDirectory(at:bindingURL.deletingLastPathComponent(),withIntermediateDirectories:true)
+     try binding.write(to:bindingURL,options:.atomic)
+     try store.write(record) // ownership must exist before the record becomes discoverable
+     DispatchQueue.main.async {
+      guard let self, !self.closed, protectedState == ReloadAuthorization(self.state) else { continuation(.failure(HostFailure.stale)); return }
+      continuation(.success(()))
      }
-     continuation()
-    }
-   } catch { DispatchQueue.main.async { self?.report(error, operation: "revertRecovery") } }
-  }
+    } catch { DispatchQueue.main.async { continuation(.failure(error)) } }
+   }
+  } catch { continuation(.failure(error)) }
  }
  func reloadExternal(_ url: URL) {
-  preserveBeforeReload { [weak self] in
-   guard let self else { return }
-   do { self.reloadAuthorization = ReloadAuthorization(self.state); try self.revert(toContentsOf: url, ofType: self.fileType ?? "net.daringfireball.markdown") }
-   catch { self.report(error, operation: "externalChange") }
-  }
+  guard !closed, !saveActive, let host else { return }
+  do {
+   let bytes = try Data(contentsOf:url), source = try UTF8File.decode(bytes)
+   let candidate = DocumentState(documentID:state.documentID,source:source)
+   var payload = loadPayload
+   payload["source"] = source; payload["savedSource"] = source; payload["revision"] = 0
+   payload.removeValue(forKey:"recoveryDraft")
+   host.prepareReload(epoch:candidate.epoch,payload:payload) { [weak self, weak host] result in
+    guard let self, let host, !self.closed else { return }
+    switch result {
+    case .failure(let error): self.report(error,operation:"reload")
+    case .success:
+     self.preserveBeforeReload { [weak self, weak host] preservation in
+      guard let self, let host, !self.closed, host.hasReloadBarrier else { return }
+      do {
+       try preservation.get()
+       guard try Data(contentsOf:url) == bytes else { throw HostFailure.externalConflict }
+       self.serviceGeneration += 1; self.pdfExport?.cancel()
+       self.state = candidate; self.diskBytes = bytes
+       self.synchronizeDirty()
+       host.commitReload()
+       self.persistRecovery(self.state.received)
+      } catch { host.cancelReload(); self.report(error,operation:"reload") }
+     }
+    }
+   }
+  } catch { report(error,operation:"reload") }
  }
  func report(_ error: Error, operation: String, sendToWeb: Bool = true) {
   if closed { return }

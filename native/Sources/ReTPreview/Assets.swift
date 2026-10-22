@@ -262,6 +262,13 @@ final class AssetStore {
   }
   if !journal.entries.isEmpty { try persist() }
  }
+ /// Freeze the complete ownership/root mapping; later imports cannot alter this copy.
+ func recoveryBinding(for id: String, originalURL: URL?) throws -> (URL, Data) {
+  let target = try AssetStore(directory:directory, documentID:id)
+  var snapshot = journal
+  if let originalURL { snapshot.recoveredRoots.append(originalURL.deletingLastPathComponent()) }
+  return (target.journalURL, try JSONEncoder().encode(snapshot))
+ }
  func recover(from oldID: String, originalURL: URL?) throws {
   let old = try AssetStore(directory:directory,documentID:oldID)
   journal.entries = old.journal.entries

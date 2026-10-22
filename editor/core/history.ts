@@ -7,6 +7,8 @@ export class History {
   private past: Entry[] = [];
   private future: Entry[] = [];
   private grouping = false;
+  get canUndo(): boolean { return this.past.length > 0; }
+  get canRedo(): boolean { return this.future.length > 0; }
   breakGroup(): void { this.grouping = false; }
   record(before: HistoryState, after: HistoryState, group?: string): void {
     const last = this.past.at(-1);

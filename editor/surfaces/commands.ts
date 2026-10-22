@@ -242,6 +242,23 @@ export function indentIntent(
   }
   return intentWithSelection(patches, s);
 }
+function safeFence(body: string, current = "```"): string {
+  const char = current[0]!;
+  const runs = body
+    .split(/\r\n|\r|\n/)
+    .map(
+      (line) =>
+        new RegExp("^ {0,3}(" + (char === "`" ? "`" : "~") + "+)[ \t]*$").exec(
+          line,
+        )?.[1]?.length ?? 0,
+    );
+  return char.repeat(
+    runs.reduce(
+      (length, n) => Math.max(length, n + 1),
+      Math.max(current.length, 3),
+    ),
+  );
+}
 export function blockIntent(
   source: string,
   s: LogicalSelection,
@@ -252,11 +269,19 @@ export function blockIntent(
     eol = newlineAt(source, a);
   if (kind === "codeBlock" || kind === "mathBlock" || kind === "table") {
     const selected = source.slice(a, b);
+    if (
+      kind === "mathBlock" &&
+      selected
+        .split(/\r\n|\r|\n/)
+        .some((line) => /^ {0,3}\${2,}[ \t]*$/.test(line))
+    )
+      return null;
+    const fence = safeFence(selected);
     let insert =
       kind === "table"
         ? `| 列 1 | 列 2 |${eol}| --- | --- |${eol}|  |  |`
         : kind === "codeBlock"
-          ? `\`\`\`${eol}${selected}${selected.endsWith(eol) ? "" : eol}\`\`\``
+          ? `${fence}${eol}${selected}${selected.endsWith(eol) ? "" : eol}${fence}`
           : `$$${eol}${selected}${selected.endsWith(eol) ? "" : eol}$$`;
     const before =
       a > 0 && !source.slice(0, a).endsWith(eol + eol) ? eol + eol : "";
@@ -556,7 +581,10 @@ export function literalPatch(
     proposed += "\n";
   const diff = minimalPatch(original, proposed);
   const from = mapTextToSource(node.mapping, diff.from),
-    to = mapTextToSource(node.mapping, diff.to, "before");
+    to =
+      diff.from === diff.to
+        ? from
+        : mapTextToSource(node.mapping, diff.to, "before");
   const first = node.mapping.segments.find((s) => s.textTo > s.textFrom);
   const lineStart = first ? source.lastIndexOf("\n", first.from - 1) + 1 : from;
   const prefix = first ? source.slice(lineStart, first.from) : "";
@@ -575,7 +603,33 @@ export function literalPatch(
   )
     insert = safePrefix + insert;
   const patch = { from, to, insert };
-  const nextSource = patched(source, [patch]);
+  const patches = [patch];
+  if (node.type === "code" && node.attributes.fence) {
+    const old = String(node.attributes.fence),
+      fence = safeFence(proposed, old);
+    if (fence !== old) {
+      const opening = node.raw.indexOf(old);
+      patches.push({
+        from: node.from + opening,
+        to: node.from + opening + old.length,
+        insert: fence,
+      });
+      if (node.attributes.closed) {
+        const endingStart =
+          Math.max(node.raw.lastIndexOf("\n"), node.raw.lastIndexOf("\r")) + 1;
+        const closing = node.raw.indexOf(old, endingStart);
+        const length = new RegExp("^" + old[0] + "+").exec(
+          node.raw.slice(closing),
+        )![0].length;
+        patches.push({
+          from: node.from + closing,
+          to: node.from + closing + length,
+          insert: fence,
+        });
+      }
+    }
+  }
+  const nextSource = patched(source, patches);
   const candidates = flatten(buildProjection(nextSource).blocks).filter(
     (n) => n.type === node.type && n.from <= node.from + 1 && n.to >= node.from,
   );
@@ -607,9 +661,14 @@ export function literalPatch(
       };
     }
   }
-  if (!next) throw Error("字面结构变化需要恢复");
+  if (
+    !next ||
+    (node.attributes.fence &&
+      (next.text !== proposed || next.to !== mapOffset(node.to, patches, true)))
+  )
+    throw Error("字面内容无法安全表示；请恢复输入或在源码模式调整分隔符");
   return {
-    patches: [patch],
+    patches,
     selection: logical(
       mapTextToSource(next.mapping, Math.min(anchor, next.mapping.textLength)),
       mapTextToSource(next.mapping, Math.min(head, next.mapping.textLength)),

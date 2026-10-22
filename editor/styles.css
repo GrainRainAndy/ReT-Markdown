@@ -1,13 +1,13 @@
 :root {
   color-scheme: light dark;
   --bg: #fff;
-  --fg: #24292f;
+  --fg: var(--text-light);
   --muted: #57606a;
   --line: #d0d7de;
   --code: #f6f8fa;
-  --accent: #0969da;
+  --accent: var(--link-light);
   font:
-    16px/1.6 -apple-system,
+    var(--body-size)/var(--body-leading) -apple-system,
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
@@ -43,9 +43,10 @@ body {
   }
 }
 #workspace {
-  max-width: 860px;
+  max-width: var(--body-width);
   margin: 0 auto;
-  padding: 42px 30px 110px;
+  padding: 42px var(--body-padding) 110px;
+  font-size: calc(var(--body-size) * var(--edit-zoom, 1));
   min-height: calc(100vh - 38px);
 }
 @media (min-width: 1400px) {
@@ -66,14 +67,17 @@ body {
   position: relative;
 }
 .ProseMirror p {
-  margin: 0 0 1em;
+  margin: 0 0 var(--block-gap);
   min-height: 1.6em;
 }
 .ProseMirror h1,
 .ProseMirror h2,
-.ProseMirror h3 {
+.ProseMirror h3,
+.ProseMirror h4,
+.ProseMirror h5,
+.ProseMirror h6 {
   line-height: 1.25;
-  margin: 1.4em 0 0.65em;
+  margin: var(--block-gap) 0;
   font-weight: 600;
 }
 .ProseMirror h1,
@@ -82,13 +86,13 @@ body {
   padding-bottom: 0.3em;
 }
 .ProseMirror h1 {
-  font-size: 2em;
+  font-size: var(--h1);
 }
 .ProseMirror h2 {
-  font-size: 1.5em;
+  font-size: var(--h2);
 }
 .ProseMirror h3 {
-  font-size: 1.25em;
+  font-size: var(--h3);
 }
 .ProseMirror h1:first-child {
   margin-top: 0;
@@ -96,7 +100,7 @@ body {
 .ProseMirror blockquote {
   border-left: 4px solid var(--line);
   padding-left: 1em;
-  margin: 0 0 1em;
+  margin: 0 0 var(--block-gap);
   color: var(--muted);
 }
 .ProseMirror li p {
@@ -104,8 +108,8 @@ body {
 }
 .ProseMirror ul,
 .ProseMirror ol {
-  padding-left: 2em;
-  margin-bottom: 1em;
+  padding-left: var(--list-indent);
+  margin-bottom: var(--block-gap);
 }
 .ProseMirror li[data-checked="true"]::marker {
   content: "☑ ";
@@ -119,7 +123,7 @@ body {
 code,
 .cm-editor {
   font:
-    13px/1.6 ui-monospace,
+    var(--code-size)/var(--body-leading) ui-monospace,
     SFMono-Regular,
     Menlo,
     monospace;
@@ -127,12 +131,12 @@ code,
 .ProseMirror code {
   background: var(--code);
   padding: 0.15em 0.35em;
-  border-radius: 4px;
+  border-radius: var(--code-radius);
 }
 .literal {
   background: var(--code);
-  border-radius: 6px;
-  margin: 0 0 1em;
+  border-radius: var(--code-radius);
+  margin: 0 0 var(--block-gap);
   padding: 8px 14px 14px;
   white-space: normal;
 }
@@ -172,14 +176,14 @@ code,
 }
 .ProseMirror table {
   border-collapse: collapse;
-  margin: 1em 0;
+  margin: var(--block-gap) 0;
   max-width: 100%;
   min-width: 50%;
 }
 .ProseMirror td,
 .ProseMirror th {
   border: 1px solid var(--line);
-  padding: 6px 13px;
+  padding: var(--cell-padding);
   min-width: 45px;
 }
 .ProseMirror th {
@@ -286,7 +290,7 @@ footer button {
   background: var(--code);
   color: var(--fg);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: var(--code-radius);
   padding: 5px;
   margin-left: 8px;
 }
@@ -353,4 +357,14 @@ footer button {
 .literal.selected-literal {
   outline: 2px solid var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, var(--code));
+}
+
+.ProseMirror h4 {
+  font-size: var(--h4);
+}
+.ProseMirror h5 {
+  font-size: var(--h5);
+}
+.ProseMirror h6 {
+  font-size: var(--h6);
 }

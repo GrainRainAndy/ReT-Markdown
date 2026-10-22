@@ -1,5 +1,10 @@
 import { defaultKeymap } from "@codemirror/commands";
-import { EditorState, EditorSelection, Prec } from "@codemirror/state";
+import {
+  EditorState,
+  EditorSelection,
+  Prec,
+  Transaction,
+} from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import {
   mapText,
@@ -11,11 +16,22 @@ import { minimalPatch, newlineAt } from "./editing";
 import { plainMarkdown, clipboardHTML } from "./clipboard";
 import { escapeHTML } from "../render/document";
 import type { Patch } from "../core/types";
+export type LiteralOrigin = "typing" | "composition" | "paste";
 export interface LiteralOptions {
   source: () => string;
   range: () => { text: string; mapping: TextMapping };
-  change: (patch: Patch, anchor: number, head: number) => void;
-  editText?: (text: string, anchor: number, head: number) => void;
+  change: (
+    patch: Patch,
+    anchor: number,
+    head: number,
+    origin: LiteralOrigin,
+  ) => void;
+  editText?: (
+    text: string,
+    anchor: number,
+    head: number,
+    origin: LiteralOrigin,
+  ) => void;
   select: (anchor: number, head: number) => void;
   command: (id: string) => void;
   key?: (event: KeyboardEvent) => boolean;
@@ -49,20 +65,6 @@ export class LiteralEditor {
           EditorView.contentAttributes.of({ "aria-label": options.label }),
           EditorView.lineWrapping,
           keymap.of([
-            {
-              key: "Mod-z",
-              run: () => {
-                options.command("undo");
-                return true;
-              },
-            },
-            {
-              key: "Mod-Shift-z",
-              run: () => {
-                options.command("redo");
-                return true;
-              },
-            },
             {
               key: "Tab",
               run: (view) => {
@@ -114,7 +116,10 @@ export class LiteralEditor {
                 const markdown = data.getData("text/markdown");
                 if (markdown) {
                   event.preventDefault();
-                  view.dispatch(view.state.replaceSelection(markdown));
+                  view.dispatch({
+                    ...view.state.replaceSelection(markdown),
+                    annotations: Transaction.userEvent.of("input.paste"),
+                  });
                   return true;
                 }
                 if (!data.getData("text/plain") && options.image) {
@@ -141,7 +146,7 @@ export class LiteralEditor {
                   event.clipboardData.setData(
                     "text/plain",
                     mode === "plain" && options.markdown
-                      ? plainMarkdown(text)
+                      ? plainMarkdown(text, options.source())
                       : text,
                   );
                   event.clipboardData.setData("text/markdown", text);
@@ -149,7 +154,7 @@ export class LiteralEditor {
                     event.clipboardData.setData(
                       "text/html",
                       options.markdown
-                        ? clipboardHTML(text)
+                        ? clipboardHTML(text, options.source())
                         : "<pre><code>" + escapeHTML(text) + "</code></pre>",
                     );
                 } catch {
@@ -165,7 +170,7 @@ export class LiteralEditor {
               compositionend: () => {
                 this.composing = false;
                 queueMicrotask(() => {
-                  this.commit();
+                  this.commit("composition");
                   options.composition(false);
                 });
                 return false;
@@ -174,7 +179,12 @@ export class LiteralEditor {
           ),
           EditorView.updateListener.of((update) => {
             if (this.updating) return;
-            if (update.docChanged && !this.composing) this.commit();
+            if (update.docChanged && !this.composing)
+              this.commit(
+                update.transactions.some((t) => t.isUserEvent("input.paste"))
+                  ? "paste"
+                  : "typing",
+              );
             else if (update.selectionSet && !this.composing) {
               const m = options.range().mapping,
                 s = update.state.selection.main;
@@ -188,7 +198,7 @@ export class LiteralEditor {
       }),
     });
   }
-  private commit(): void {
+  private commit(origin: LiteralOrigin = "typing"): void {
     if (this.updating || this.composing) return;
     const text = this.view.state.doc.toString();
     if (text === this.baseline) return;
@@ -196,7 +206,7 @@ export class LiteralEditor {
       const selection = this.view.state.selection.main;
       try {
         this.notifying = true;
-        this.options.editText(text, selection.anchor, selection.head);
+        this.options.editText(text, selection.anchor, selection.head, origin);
         this.baseline = text;
       } catch (error) {
         this.options.failure(text, error);
@@ -233,6 +243,7 @@ export class LiteralEditor {
         { from, to, insert },
         mapTextToSource(newRange.mapping, sel.anchor),
         mapTextToSource(newRange.mapping, sel.head),
+        origin,
       );
     } catch (error) {
       this.options.failure(text, error);

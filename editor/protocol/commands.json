@@ -1,0 +1,317 @@
+[
+  {
+    "id": "undo",
+    "title": "撤销",
+    "group": "edit",
+    "key": "z",
+    "modifiers": []
+  },
+  {
+    "id": "redo",
+    "title": "重做",
+    "group": "edit",
+    "key": "z",
+    "modifiers": ["shift"]
+  },
+  {
+    "id": "pasteImage",
+    "title": "粘贴图片",
+    "group": "edit",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "copyMarkdown",
+    "title": "拷贝 Markdown",
+    "group": "edit",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "copyPlain",
+    "title": "拷贝纯文本",
+    "group": "edit",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "copyRich",
+    "title": "拷贝富文本",
+    "group": "edit",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "find",
+    "title": "查找",
+    "group": "edit",
+    "key": "f",
+    "modifiers": []
+  },
+  {
+    "id": "replace",
+    "title": "替换",
+    "group": "edit",
+    "key": "f",
+    "modifiers": ["alt"]
+  },
+  {
+    "id": "bold",
+    "title": "加粗",
+    "group": "format",
+    "key": "b",
+    "modifiers": []
+  },
+  {
+    "id": "italic",
+    "title": "斜体",
+    "group": "format",
+    "key": "i",
+    "modifiers": []
+  },
+  {
+    "id": "strike",
+    "title": "删除线",
+    "group": "format",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "inlineCode",
+    "title": "行内代码",
+    "group": "format",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "link",
+    "title": "链接",
+    "group": "format",
+    "key": "k",
+    "modifiers": []
+  },
+  {
+    "id": "heading1",
+    "title": "标题 1",
+    "group": "format",
+    "key": "1",
+    "modifiers": []
+  },
+  {
+    "id": "heading2",
+    "title": "标题 2",
+    "group": "format",
+    "key": "2",
+    "modifiers": []
+  },
+  {
+    "id": "heading3",
+    "title": "标题 3",
+    "group": "format",
+    "key": "3",
+    "modifiers": []
+  },
+  {
+    "id": "heading4",
+    "title": "标题 4",
+    "group": "format",
+    "key": "4",
+    "modifiers": []
+  },
+  {
+    "id": "heading5",
+    "title": "标题 5",
+    "group": "format",
+    "key": "5",
+    "modifiers": []
+  },
+  {
+    "id": "heading6",
+    "title": "标题 6",
+    "group": "format",
+    "key": "6",
+    "modifiers": []
+  },
+  {
+    "id": "bulletList",
+    "title": "无序列表",
+    "group": "format",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "orderedList",
+    "title": "有序列表",
+    "group": "format",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "quote",
+    "title": "引用",
+    "group": "format",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "codeBlock",
+    "title": "代码块",
+    "group": "format",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "mathBlock",
+    "title": "数学块",
+    "group": "format",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "table",
+    "title": "表格",
+    "group": "format",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "insertImage",
+    "title": "插入图片…",
+    "group": "format",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "codeLanguage",
+    "title": "代码语言…",
+    "group": "format",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "inlineMathSource",
+    "title": "行内公式源码…",
+    "group": "format",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "tableSelectCells",
+    "title": "选取单元格区域",
+    "group": "table",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "tableAddRow",
+    "title": "插入行",
+    "group": "table",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "tableDeleteRow",
+    "title": "删除行",
+    "group": "table",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "tableAddColumn",
+    "title": "插入列",
+    "group": "table",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "tableDeleteColumn",
+    "title": "删除列",
+    "group": "table",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "tableAlignLeft",
+    "title": "靠左对齐",
+    "group": "table",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "tableAlignCenter",
+    "title": "居中对齐",
+    "group": "table",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "tableAlignRight",
+    "title": "靠右对齐",
+    "group": "table",
+    "key": "",
+    "modifiers": []
+  },
+  {
+    "id": "toggleSource",
+    "title": "切换源码",
+    "group": "view",
+    "key": "m",
+    "modifiers": ["shift"]
+  },
+  {
+    "id": "zoomIn",
+    "title": "放大编辑文字",
+    "group": "view",
+    "key": "=",
+    "modifiers": []
+  },
+  {
+    "id": "zoomOut",
+    "title": "缩小编辑文字",
+    "group": "view",
+    "key": "-",
+    "modifiers": []
+  },
+  {
+    "id": "zoomReset",
+    "title": "实际文字大小",
+    "group": "view",
+    "key": "0",
+    "modifiers": []
+  },
+  {
+    "id": "save",
+    "title": "保存",
+    "group": "file",
+    "key": "s",
+    "modifiers": []
+  },
+  {
+    "id": "saveAs",
+    "title": "另存为…",
+    "group": "file",
+    "key": "s",
+    "modifiers": ["shift"]
+  },
+  {
+    "id": "open",
+    "title": "打开…",
+    "group": "file",
+    "key": "o",
+    "modifiers": []
+  },
+  {
+    "id": "new",
+    "title": "新建",
+    "group": "file",
+    "key": "n",
+    "modifiers": []
+  },
+  {
+    "id": "exportPDF",
+    "title": "导出 PDF…",
+    "group": "file",
+    "key": "p",
+    "modifiers": ["shift"]
+  }
+]

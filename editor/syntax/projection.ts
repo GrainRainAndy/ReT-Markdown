@@ -1,3 +1,4 @@
+import { referenceResolver } from './references';
 import { parseDocument, type ParsedDocument, type SyntaxNode } from './parse';
 import { MappingError, mapInlineCode, mapSemanticText, mapText, type TextMapping } from './mapping';
 import type { SourceRange } from '../core/types';
@@ -16,6 +17,7 @@ export interface DocumentProjection { source: string; syntax: ParsedDocument; bl
 
 export function buildProjection(source: string): DocumentProjection {
   const syntax = parseDocument(source);
+  const resolve = referenceResolver(syntax.root);
   const convert = (node: SyntaxNode): ProjectionNode => {
     let content = node.raw;
     let from = node.from;
@@ -34,7 +36,7 @@ export function buildProjection(source: string): DocumentProjection {
     }
     let mapped = mapText(content, from);
     let type = node.type;
-    let attributes = node.attributes;
+    let attributes = resolve(node);
     try {
       if (node.type === 'text' && node.value !== undefined) mapped = mapSemanticText(content, from, node.value);
       if ((node.type === 'code' || node.type === 'math') && node.value !== undefined) {

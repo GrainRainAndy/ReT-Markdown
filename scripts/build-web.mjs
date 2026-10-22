@@ -2,6 +2,7 @@ import { build, context } from "esbuild";
 import { mkdir, copyFile, cp } from "node:fs/promises";
 await mkdir("dist/web", { recursive: true });
 await copyFile("editor/index.html", "dist/web/index.html");
+await copyFile("editor/protocol/commands.json", "dist/web/commands.json");
 await cp("node_modules/katex/dist/fonts", "dist/web/fonts", {
   recursive: true,
 });

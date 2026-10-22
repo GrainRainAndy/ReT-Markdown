@@ -129,3 +129,14 @@ it("expands rich cross-literal selections in both directions but leaves literal/
     ),
   ).toEqual(logical(12, 14, { kind: "code", nodeId: "c" }));
 });
+it("maps word and line deletion through semantic text rather than one grapheme", () => {
+  const source = "hello world\nsecond line",
+    p = new RichProjection(source);
+  expect(p.deletionRange(11, true, "word")).toEqual({ from: 6, to: 11 });
+  expect(p.deletionRange(11, true, "line")).toEqual({ from: 0, to: 11 });
+  expect(p.deletionRange(source.length, true, "line")).toEqual({
+    from: 12,
+    to: source.length,
+  });
+  expect(p.deletionRange(0, false, "word")).toEqual({ from: 0, to: 5 });
+});

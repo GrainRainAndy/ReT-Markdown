@@ -17,17 +17,21 @@ struct BridgeEnvelope {
   guard matching || (method == "ready" && doc.isEmpty && session.isEmpty) else { return nil }
   func snapshotValid() -> Bool { (payload["source"] as? String).map { $0.utf8.count <= 32 * 1024 * 1024 } == true && integer(payload["revision"]) != nil }
   switch method {
-  case "ready", "save", "saveAs", "exportPDF", "open", "new": guard payload.isEmpty else { return nil }
+  case "reloadComplete", "ready", "save", "saveAs", "exportPDF", "open", "new": guard payload.isEmpty else { return nil }
   case "checkpoint":
    guard snapshotValid(), let dirty = payload["dirty"] as? NSNumber, CFGetTypeID(dirty) == CFBooleanGetTypeID() else { return nil }
    if let resolution = payload["resolvesRecoveryDraft"] { guard let flag = resolution as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() else { return nil } }
   case "recoveryDraft":
    guard Set(payload.keys) == ["draft"], let draft = payload["draft"], draft is NSNull || RecoveryDraft.parse(draft) != nil else { return nil }
-  case "flushResult":
+  case "flushResult", "reloadReady":
    guard let status = payload["status"] as? String else { return nil }
    if status == "ready" { guard snapshotValid() else { return nil } }
    else if status == "pending" { guard let reason = payload["reason"] as? String, reason.utf8.count <= 1024 else { return nil } }
    else { return nil }
+  case "openLink":
+   guard Set(payload.keys) == ["url"], let value = payload["url"] as? String, value.utf8.count <= 8192 else { return nil }
+  case "commandState":
+   guard Set(payload.keys) == ["enabled"], let states = payload["enabled"] as? [String:Any], states.count <= 100, states.allSatisfy({ key,value in key.utf8.count <= 128 && (value as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() } == true }) else { return nil }
   case "importImage":
    guard Set(payload.keys).isSubset(of: ["dataURL", "fileName", "source"]) else { return nil }
    if let source = payload["source"] { guard let value = source as? String, value == "clipboard", payload["dataURL"] == nil else { return nil } }
