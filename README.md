@@ -1,6 +1,6 @@
 # ReT Markdown
 
-ReT Markdown 已于 2026-10-21 归档旧实现，进入从零重写阶段。当前分支 `rewrite/from-zero` 使用独立根提交，正在实现个人 macOS Markdown 编辑器的首个预览版。完整编辑、图片和原生 PDF 工作流已形成可运行构建；当前正在修复整分支审查发现的问题并完成交付验证。
+ReT Markdown 已于 2026-10-21 归档旧实现，并从独立根提交重新开发。当前分支 `rewrite/from-zero` 已产出个人 macOS Markdown 编辑器首个预览版 **0.2.0-alpha.1**，包含结构化编辑、源码模式、图片、保存恢复与原生 PDF。
 
 重写以本地 macOS Markdown 写作为默认产品定位，以仓库内 **Typora 1.14.10（7786）** 为行为研究对象。旧版的编辑内核、模块边界、依赖清单和验收结论均不作为新实现的既定方案。
 
@@ -13,7 +13,7 @@ ReT Markdown 已于 2026-10-21 归档旧实现，进入从零重写阶段。当�
 5. [验收方案](docs/verification/acceptance-plan.md)：需求追踪、测试层级与失败门槛。
 6. [旧版归档](docs/legacy-archive.md)：归档身份、内容核验与恢复方法。
 
-需求与技术方案已获批准并进入实现。当前实现与实际验收范围见 [初版验收记录](docs/verification/initial-preview.md)，执行步骤见 [实现计划](docs/superpowers/plans/2026-10-21-initial-rewrite.md)。初版尚未完成交付，未验证的原生输入法、性能和辅助功能不视为通过。
+需求与技术方案已获批准，初版实现和代码审查已完成。最终生产源码为 `836d5eb`；126 项单元测试、80 项浏览器测试、62 项原生测试、类型检查、构建与签名验证通过。实际范围与保留限制见 [初版验收记录](docs/verification/initial-preview.md)，执行步骤见 [实现计划](docs/superpowers/plans/2026-10-21-initial-rewrite.md)。这是供体验的 alpha；真实系统输入法、完整原生交互、性能和辅助功能尚未验收。
 
 ## 本地构建
 
