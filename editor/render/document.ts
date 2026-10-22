@@ -98,7 +98,10 @@ export function renderDocument(
       case "table": {
         const align = n.attributes.align as (string | null)[];
         const row = (r: SyntaxNode, header: boolean) =>
-          `<tr>${r.children
+          `<tr>${Array.from(
+            { length: n.children[0]?.children.length ?? 0 },
+            (_, i) => r.children[i],
+          )
             .map((cell, i) => {
               const tag = header ? "th" : "td";
               const style = ["left", "center", "right"].includes(
@@ -106,7 +109,7 @@ export function renderDocument(
               )
                 ? ` style="text-align:${align[i]}"`
                 : "";
-              return `<${tag}${style}>${cell.children.map(render).join("")}</${tag}>`;
+              return `<${tag}${style}>${cell?.children.map(render).join("") ?? ""}</${tag}>`;
             })
             .join("")}</tr>`;
         return `<table><thead>${n.children[0] ? row(n.children[0], true) : ""}</thead><tbody>${n.children

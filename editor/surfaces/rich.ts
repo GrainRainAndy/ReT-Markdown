@@ -28,6 +28,7 @@ import {
   tableContext,
   cellOffset,
   literalPatch,
+  virtualCellIntent,
   mapOffset,
 } from "./commands";
 import { plainMarkdown, clipboardHTML } from "./clipboard";
@@ -179,7 +180,7 @@ export class RichSurface {
       } else {
         const anchor = this.projection.sourceAt(s.anchor),
           head = this.projection.sourceAt(s.head),
-          safe = this.selectionAt(anchor, head);
+          safe = this.selectionAt(anchor, head, s.head);
         this.options.session.setSelection(safe);
         if (safe.anchor.offset !== anchor || safe.head.offset !== head)
           this.refresh();
@@ -240,7 +241,9 @@ export class RichSurface {
         this.selectionAt(from).owner,
       );
       this.options.apply(
-        intent,
+        record?.node.attributes.virtual
+          ? virtualCellIntent(record.node, insert, this.cellOwner(record.node))
+          : intent,
         this.committingComposition ? undefined : "typing",
       );
     } catch (error) {
@@ -509,22 +512,26 @@ export class RichSurface {
       head = this.view.posAtDOM(dom.focusNode, dom.focusOffset),
       current = this.options.session.selection;
     if (
-      this.projection.positionAt(
-        current.anchor.offset,
-        current.anchor.offset < current.head.offset
-          ? "before"
-          : current.anchor.offset > current.head.offset
-            ? "after"
-            : undefined,
-      ) === anchor &&
-      this.projection.positionAt(
-        current.head.offset,
-        current.anchor.offset < current.head.offset
-          ? "after"
-          : current.anchor.offset > current.head.offset
-            ? "before"
-            : undefined,
-      ) === head
+      (current.owner.kind === "cell"
+        ? this.selectionPosition(current.anchor.offset, current.owner)
+        : this.projection.positionAt(
+            current.anchor.offset,
+            current.anchor.offset < current.head.offset
+              ? "before"
+              : current.anchor.offset > current.head.offset
+                ? "after"
+                : undefined,
+          )) === anchor &&
+      (current.owner.kind === "cell"
+        ? this.selectionPosition(current.head.offset, current.owner)
+        : this.projection.positionAt(
+            current.head.offset,
+            current.anchor.offset < current.head.offset
+              ? "after"
+              : current.anchor.offset > current.head.offset
+                ? "before"
+                : undefined,
+          )) === head
     )
       return;
     this.options.session.setSelection(
@@ -551,6 +558,7 @@ export class RichSurface {
                 ),
               ],
         ),
+        head,
       ),
     );
   }
@@ -558,6 +566,19 @@ export class RichSurface {
     if (event.isComposing || this.composing) return false;
     this.captureSelection();
     const selection = this.options.session.selection;
+    if (
+      (event.key === "Backspace" || event.key === "Delete") &&
+      selection.anchor.offset === selection.head.offset &&
+      selection.owner.kind === "cell" &&
+      tableContext(
+        this.options.session.source,
+        selection.head.offset,
+        selection.owner,
+      )?.cell.attributes.virtual
+    ) {
+      event.preventDefault();
+      return true;
+    }
     if (
       ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key) &&
       !event.shiftKey &&
@@ -625,7 +646,13 @@ export class RichSurface {
       return true;
     }
     if (event.key === "Tab" || event.key === "Enter") {
-      if (tableContext(this.options.session.source, selection.head.offset)) {
+      if (
+        tableContext(
+          this.options.session.source,
+          selection.head.offset,
+          selection.owner,
+        )
+      ) {
         event.preventDefault();
         if (event.key === "Enter" && event.shiftKey) {
           this.options.notice("单元格不支持换行");
@@ -673,6 +700,28 @@ export class RichSurface {
       this.options.apply(replaceIntent(safe.from, safe.to, "", s.owner));
       return true;
     }
+    if (
+      event.key === "Enter" &&
+      selection.anchor.offset === selection.head.offset
+    ) {
+      const opening = this.projection.literalAt(selection.head.offset);
+      if (opening?.node.attributes.pendingOpening) {
+        event.preventDefault();
+        this.options.apply(
+          replaceIntent(
+            selection.head.offset,
+            selection.head.offset,
+            newlineAt(this.options.session.source, selection.head.offset),
+            {
+              kind: opening.node.type === "math" ? "math" : "code",
+              nodeId: opening.id,
+            },
+          ),
+        );
+        this.focus();
+        return true;
+      }
+    }
     if (event.key === "Enter" || event.key === "Backspace") {
       const s = this.options.session.selection;
       const intent =
@@ -714,11 +763,15 @@ export class RichSurface {
   replace(text: string): void {
     this.captureSelection();
     const s = this.options.session.selection;
-    const cell = tableContext(this.options.session.source, s.head.offset);
+    const cell = tableContext(
+      this.options.session.source,
+      s.head.offset,
+      s.owner,
+    );
     if (
       cell &&
-      tableContext(this.options.session.source, s.anchor.offset)?.cell.from ===
-        cell.cell.from
+      tableContext(this.options.session.source, s.anchor.offset, s.owner)?.cell
+        .from === cell.cell.from
     ) {
       text = text
         .replace(/[\r\n\t]+/g, " ")
@@ -729,6 +782,10 @@ export class RichSurface {
       );
     }
     const range = clipboardRange(this.options.session.source, s);
+    if (cell?.cell.attributes.virtual) {
+      this.options.apply(virtualCellIntent(cell.cell, text, s.owner));
+      return;
+    }
     this.options.apply(
       replaceIntent(
         range.from,
@@ -738,7 +795,48 @@ export class RichSurface {
       ),
     );
   }
-  private selectionAt(anchor: number, head = anchor): LogicalSelection {
+  private cellOwner(
+    node: import("../syntax/projection").ProjectionNode,
+  ): Owner {
+    const row = [...this.projection.records.values()].find(
+      (r) => r.node.type === "tableRow" && r.node.children.includes(node),
+    );
+    return {
+      kind: "cell",
+      tableId: row?.parentId ?? "",
+      row: Number(node.attributes.row),
+      column: Number(node.attributes.column),
+    };
+  }
+  private selectionPosition(offset: number, owner: Owner): number {
+    if (owner.kind === "cell") {
+      const cell = [...this.projection.records.values()].find(
+        (r) =>
+          r.node.type === "tableCell" &&
+          r.node.attributes.virtual &&
+          r.node.attributes.row === owner.row &&
+          r.node.attributes.column === owner.column &&
+          this.projection.records.get(r.parentId)?.parentId === owner.tableId,
+      );
+      if (cell) return cell.pos + 1;
+    }
+    return this.projection.positionAt(offset);
+  }
+  private selectionAt(
+    anchor: number,
+    head = anchor,
+    position?: number,
+  ): LogicalSelection {
+    if (position !== undefined) {
+      const cell = [...this.projection.records.values()].find(
+        (r) =>
+          r.node.type === "tableCell" &&
+          r.pos < position &&
+          r.pos + this.projection.doc.nodeAt(r.pos)!.nodeSize > position,
+      );
+      if (cell?.node.attributes.virtual && anchor === head)
+        return logical(anchor, head, this.cellOwner(cell.node));
+    }
     const c = tableContext(this.options.session.source, head),
       a = tableContext(this.options.session.source, anchor);
     if (c && a?.table.from === c.table.from && a.cell.from === c.cell.from) {
@@ -790,7 +888,11 @@ export class RichSurface {
     this.copyMode = "markdown";
     if (cut) {
       if (cells && s.cellRange) {
-        const c = tableContext(this.options.session.source, s.head.offset)!;
+        const c = tableContext(
+          this.options.session.source,
+          s.head.offset,
+          s.owner,
+        )!;
         const patches: Patch[] = [];
         for (
           let row = Math.min(s.cellRange.fromRow, s.cellRange.toRow);
@@ -837,10 +939,16 @@ export class RichSurface {
   selectCells(): void {
     this.captureSelection();
     const s = this.options.session.selection,
-      c = tableContext(this.options.session.source, s.head.offset);
+      c = tableContext(this.options.session.source, s.head.offset, s.owner);
     if (!c) return;
     this.options.session.setSelection({
-      ...this.selectionAt(cellOffset(c.cell)),
+      ...logical(
+        cellOffset(c.cell),
+        cellOffset(c.cell),
+        s.owner.kind === "cell"
+          ? s.owner
+          : this.selectionAt(cellOffset(c.cell)).owner,
+      ),
       kind: "cells",
       cellRange: {
         fromRow: c.row,
@@ -854,7 +962,7 @@ export class RichSurface {
   }
   private extendCells(key: string): void {
     const s = this.options.session.selection,
-      c = tableContext(this.options.session.source, s.head.offset);
+      c = tableContext(this.options.session.source, s.head.offset, s.owner);
     if (!s.cellRange || !c) return;
     const range = { ...s.cellRange };
     if (key === "ArrowDown")
@@ -875,7 +983,7 @@ export class RichSurface {
       .forEach((e) => e.classList.remove("selected-cell"));
     const s = this.options.session.selection;
     if (!s.cellRange) return;
-    const c = tableContext(this.options.session.source, s.head.offset);
+    const c = tableContext(this.options.session.source, s.head.offset, s.owner);
     if (!c) return;
     const record = [...this.projection.records.values()].find(
       (r) => r.node.type === "table" && r.node.from === c.table.from,
@@ -895,7 +1003,7 @@ export class RichSurface {
   }
   private moveCell(delta: number): void {
     const s = this.options.session.selection,
-      c = tableContext(this.options.session.source, s.head.offset);
+      c = tableContext(this.options.session.source, s.head.offset, s.owner);
     if (!c) return;
     const columns = c.table.children[0]!.children.length,
       index = c.row * columns + c.column + (delta || columns),
@@ -903,7 +1011,14 @@ export class RichSurface {
       column = (index + columns) % columns;
     const cell = c.table.children[row]?.children[column];
     if (cell) {
-      this.options.session.setSelection(this.selectionAt(cellOffset(cell)));
+      this.options.session.setSelection(
+        logical(cellOffset(cell), cellOffset(cell), {
+          kind: "cell",
+          tableId: s.owner.kind === "cell" ? s.owner.tableId : "",
+          row,
+          column,
+        }),
+      );
       this.refresh();
       this.view.focus();
       return;
@@ -1052,6 +1167,9 @@ export class RichSurface {
         this.options.session.source,
         previous,
         patch,
+        this.options.session.selection.owner.kind === "prose"
+          ? this.options.session.selection.head.offset
+          : undefined,
       );
       let s = this.options.session.selection;
       const literal = this.projection.literalAt(
@@ -1090,8 +1208,37 @@ export class RichSurface {
         s = { ...s, owner: { ...s.owner, nodeId: literal.id } };
         this.options.session.setSelection(s);
       }
+      if (literal && (s.owner.kind === "code" || s.owner.kind === "math")) {
+        const clamp = (offset: number) =>
+          Math.max(
+            literal.node.mapping.from,
+            Math.min(literal.node.mapping.to, offset),
+          );
+        if (
+          clamp(s.anchor.offset) !== s.anchor.offset ||
+          clamp(s.head.offset) !== s.head.offset
+        ) {
+          s = {
+            ...s,
+            anchor: { ...s.anchor, offset: clamp(s.anchor.offset) },
+            head: { ...s.head, offset: clamp(s.head.offset) },
+          };
+          this.options.session.setSelection(s);
+        }
+      }
       if (s.owner.kind === "cell") {
-        const current = this.selectionAt(s.anchor.offset, s.head.offset);
+        const context = tableContext(
+          this.options.session.source,
+          s.head.offset,
+          s.owner,
+        );
+        const table = [...this.projection.records.values()].find(
+          (r) => r.node.type === "table" && r.node.from === context?.table.from,
+        );
+        const current =
+          context && table
+            ? { ...s, owner: { ...s.owner, tableId: table.id } }
+            : this.selectionAt(s.anchor.offset, s.head.offset);
         if (
           current.owner.kind === "cell" &&
           current.owner.tableId !== s.owner.tableId
@@ -1106,22 +1253,26 @@ export class RichSurface {
       else
         selection = TextSelection.create(
           this.projection.doc,
-          this.projection.positionAt(
-            s.anchor.offset,
-            s.anchor.offset < s.head.offset
-              ? "before"
-              : s.anchor.offset > s.head.offset
-                ? "after"
-                : undefined,
-          ),
-          this.projection.positionAt(
-            s.head.offset,
-            s.anchor.offset < s.head.offset
-              ? "after"
-              : s.anchor.offset > s.head.offset
-                ? "before"
-                : undefined,
-          ),
+          s.owner.kind === "cell"
+            ? this.selectionPosition(s.anchor.offset, s.owner)
+            : this.projection.positionAt(
+                s.anchor.offset,
+                s.anchor.offset < s.head.offset
+                  ? "before"
+                  : s.anchor.offset > s.head.offset
+                    ? "after"
+                    : undefined,
+              ),
+          s.owner.kind === "cell"
+            ? this.selectionPosition(s.head.offset, s.owner)
+            : this.projection.positionAt(
+                s.head.offset,
+                s.anchor.offset < s.head.offset
+                  ? "after"
+                  : s.anchor.offset > s.head.offset
+                    ? "before"
+                    : undefined,
+              ),
         );
       this.view.updateState(
         EditorState.create({ schema, doc: this.projection.doc, selection }),

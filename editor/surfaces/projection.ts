@@ -165,6 +165,7 @@ export class RichProjection {
     readonly source: string,
     previous?: RichProjection,
     change?: Patch | readonly Patch[],
+    proseOffset?: number,
   ) {
     this.projection = buildProjection(source);
     const used = new Set<string>();
@@ -250,12 +251,16 @@ export class RichProjection {
           made = [
             schema.nodes[
               n.type === "inlineMath" ? "inline_math" : "image"
-            ]!.create({
-              id,
-              text: n.text ?? n.raw,
-              url: n.attributes.url ?? "",
-              alt: n.attributes.alt ?? "",
-            }),
+            ]!.create(
+              {
+                id,
+                text: n.text ?? n.raw,
+                url: n.attributes.url ?? "",
+                alt: n.attributes.alt ?? "",
+              },
+              null,
+              marks,
+            ),
           ];
           this.runs.push({
             pos,
@@ -321,8 +326,31 @@ export class RichProjection {
           };
         }
       }
+      const pendingOpening =
+        n.attributes.fence &&
+        !n.attributes.closed &&
+        !/[\r\n]/.test(n.raw) &&
+        proseOffset !== undefined &&
+        n.from <= proseOffset &&
+        n.to >= proseOffset &&
+        [...(previous?.records.values() ?? [])].some(
+          (r) =>
+            r.node.from === n.from &&
+            previous?.doc.nodeAt(r.pos)?.type.name === "paragraph",
+        );
+      if (pendingOpening)
+        n = { ...n, attributes: { ...n.attributes, pendingOpening: true } };
       const id = idFor(n, parentId);
       this.records.set(id, { id, pos, node: n, parentId });
+      if (pendingOpening) {
+        this.runs.push({
+          pos: pos + 1,
+          length: n.raw.length,
+          mapping: mapText(n.raw, n.from).mapping,
+          node: n,
+        });
+        return schema.nodes.paragraph!.create({ id }, schema.text(n.raw));
+      }
       if (n.type === "list" && /^[-+*]$/.test(n.raw)) {
         const mapped = mapText(n.raw, n.from);
         this.runs.push({

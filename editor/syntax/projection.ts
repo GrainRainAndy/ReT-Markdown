@@ -19,6 +19,12 @@ export function buildProjection(source: string): DocumentProjection {
   const syntax = parseDocument(source);
   const resolve = referenceResolver(syntax.root);
   const convert = (node: SyntaxNode): ProjectionNode => {
+    // Container parsers may stop an empty unclosed fence before its existing
+    // ending. That ending is the body anchor, not a second newline to insert.
+    if (node.attributes.fence && !node.attributes.closed && !/[\r\n]/.test(node.raw)) {
+      const ending = /^(\r\n|\r|\n)/.exec(source.slice(node.to));
+      if (ending) node = { ...node, to: node.to + ending[0].length, raw: node.raw + ending[0] };
+    }
     let content = node.raw;
     let from = node.from;
     if (node.type === 'inlineMath') { content = content.slice(1, -1); from++; }
@@ -51,9 +57,27 @@ export function buildProjection(source: string): DocumentProjection {
       attributes = { ...attributes, sourceType: node.type, mappingFallback: true };
       mapped = mapText(node.raw, node.from);
     }
+    const children = node.children.map(convert);
+    if (node.type === 'table') {
+      const width = children[0]?.children.length ?? 0;
+      children.forEach((row, rowIndex) => {
+        const count = row.children.length;
+        row.children = Array.from({ length: width }, (_, column) => {
+          const cell = row.children[column];
+          if (cell) return { ...cell, attributes: { ...cell.attributes, row: rowIndex, column } };
+          return {
+            id: `${row.id}-virtual-${column}`, type: 'tableCell', raw: '',
+            from: row.to, to: row.to, text: '', children: [],
+            attributes: { virtual: true, row: rowIndex, column, missingBefore: column - count,
+              needsSeparator: !/(?<!\\)\|[ \t]*$/.test(row.raw) },
+            mapping: mapText('', row.to).mapping,
+          };
+        });
+      });
+    }
     return {
       id: node.id, type, raw: node.raw, from: node.from, to: node.to,
-      attributes, children: node.children.map(convert),
+      attributes, children,
       ...(node.children.length === 0 ? { text: mapped.text } : {}), mapping: mapped.mapping,
     };
   };
@@ -67,7 +91,8 @@ export function buildProjection(source: string): DocumentProjection {
     if (leading) {
       // Leading whitespace lines are editable; the last line belongs to the next block.
       const starts = [from, ...endings];
-      for (const offset of starts) if (offset < to || trailing) gap(offset);
+      for (let i = 0; i < starts.length; i++)
+        if (i < endings.length || trailing) gap(starts[i]!);
     } else {
       // Two line endings separate blocks. Each additional ending owns one blank.
       for (let i = 1; i < endings.length; i++) if (trailing || i < endings.length - 1) gap(endings[i]!);

@@ -423,9 +423,14 @@ export interface TableContext {
 export function tableContext(
   source: string,
   offset: number,
+  owner?: Owner,
 ): TableContext | null {
   const table = containing(source, offset, "table");
   if (!table) return null;
+  if (owner?.kind === "cell") {
+    const cell = table.children[owner.row]?.children[owner.column];
+    if (cell) return { table, row: owner.row, column: owner.column, cell };
+  }
   for (let row = 0; row < table.children.length; row++) {
     const cells = table.children[row]!.children;
     for (let column = 0; column < cells.length; column++) {
@@ -435,6 +440,25 @@ export function tableContext(
     }
   }
   return { table, row: 0, column: 0, cell: table.children[0]!.children[0]! };
+}
+/** Virtual cells share the row-end anchor; the existing cell owner carries identity. */
+export function virtualCellIntent(
+  cell: ProjectionNode,
+  text: string,
+  owner: Owner,
+): Intent {
+  const prefix =
+    (cell.attributes.needsSeparator ? " |" : "") +
+    "  |".repeat(Number(cell.attributes.missingBefore)) +
+    " ";
+  return {
+    patches: [{ from: cell.from, to: cell.to, insert: prefix + text + " |" }],
+    selection: logical(
+      cell.from + prefix.length + text.length,
+      cell.from + prefix.length + text.length,
+      owner,
+    ),
+  };
 }
 export function cellOffset(cell: ProjectionNode): number {
   return (
@@ -480,7 +504,7 @@ export function tableIntent(
   s: LogicalSelection,
   operation: string,
 ): Intent | null {
-  const context = tableContext(source, s.head.offset);
+  const context = tableContext(source, s.head.offset, s.owner);
   if (!context) return null;
   const { table, row, column } = context;
   const rows = tableText(table),
@@ -587,7 +611,13 @@ export function literalPatch(
         : mapTextToSource(node.mapping, diff.to, "before");
   const first = node.mapping.segments.find((s) => s.textTo > s.textFrom);
   const lineStart = first ? source.lastIndexOf("\n", first.from - 1) + 1 : from;
-  const prefix = first ? source.slice(lineStart, first.from) : "";
+  // Empty bodies have no text segment. Derive their continuation prefix from
+  // the parsed opening boundary, replacing list markers with indentation.
+  const openingStart = source.lastIndexOf("\n", Math.max(0, node.from - 1)) + 1;
+  const continuation = source
+    .slice(openingStart, node.from)
+    .replace(/(?:[-+*]|\d+[.)])[ \t]+/g, (marker) => " ".repeat(marker.length));
+  const prefix = first ? source.slice(lineStart, first.from) : continuation;
   const safePrefix = /^[\s>]*$/.test(prefix) ? prefix : "";
   let insert = diff.insert.split("\n").join(eol + safePrefix);
   if (
@@ -602,6 +632,10 @@ export function literalPatch(
     insert
   )
     insert = safePrefix + insert;
+  // A bare opening fence still needs its line ending before the first body
+  // character. Never supply a closing fence for an unclosed source block.
+  if (node.attributes.fence && !/[\r\n]/.test(node.raw) && insert)
+    insert = eol + safePrefix + insert;
   const patch = { from, to, insert };
   const patches = [patch];
   if (node.type === "code" && node.attributes.fence) {
