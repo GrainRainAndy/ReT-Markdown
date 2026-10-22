@@ -273,4 +273,6 @@ AppKit NSDocument 负责系统文稿生命周期。其自动保存能力声明�
 | 数学兼容度或 PDF 分页不足 | 固定公式语料与 PDF 提取/渲染核验，必要时更换渲染器 |
 | Typora 静态分析不完整 | 保留证据边界；需要参考行为时新增指定夹具的原生观察 |
 
-待原型冻结：ProseMirror/CodeMirror 与解析器的具体版本、macOS 最低版本、代码高亮器、数学引擎和 PDF API。依赖需使用新 lockfile、许可证清单与可重复构建记录，不能沿用旧 node_modules 的偶然可用状态。
+实施中已锁定：ProseMirror model 1.25.12/state 1.4.4/view 1.42.6，CodeMirror state 6.7.6/view 6.43.15/commands 6.11.1，mdast-util-from-markdown 2.1.0，KaTeX 0.19.0；完整依赖以根目录 `package.json` 和新建的 `package-lock.json` 为准。运行依赖的许可证文本保存在 [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)。新工程使用重新安装的依赖，不使用归档前的 node_modules。
+
+原生工程目前部署目标为 macOS 13，以 Apple Swift 6.4 工具链构建；实际验证环境为 macOS 27.0.1 arm64，尚不能据此声称旧系统已经验证。代码高亮器与 PDF API 的最终路线及输出证据仍待对应工作完成。依赖版本锁定和实验实现不代表 G1–G5 验收已通过；最新已观察结果与未知项见[初版验收记录](../verification/initial-preview.md)。
