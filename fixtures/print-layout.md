@@ -183,6 +183,8 @@ print("第 080 行", 80 ** 2)
 
 ## 缺失与远程图片
 
+![特殊字符路径的静态本地图](preview.assets/%E5%9B%BE%20%E5%83%8F%20%281%29%20%23%25.svg)
+
 ![缺失本地图片](missing-preview-image.png)
 
 ![远程图占位](https://example.invalid/preview.png)
