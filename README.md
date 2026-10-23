@@ -15,7 +15,9 @@ ReT Markdown 已于 2026-10-21 归档旧实现，并从独立根提交重新开�
 
 最新状态：[2026-10-23 验收审阅](docs/verification/2026-10-23-rewrite-acceptance-review.md)发现围栏输入阻断、关闭回调及特殊片段呈现问题，当前验收不通过；报告包含复现证据、复验门槛和 Typora/Github 自定义样式进阶要求。
 
-需求与技术方案已获批准，初版实现和代码审查已完成。最终生产源码为 `836d5eb`；126 项单元测试、80 项浏览器测试、62 项原生测试、类型检查、构建与签名验证通过。实际范围与保留限制见 [初版验收记录](docs/verification/initial-preview.md)，执行步骤见 [实现计划](docs/superpowers/plans/2026-10-21-initial-rewrite.md)。这是供体验的 alpha；真实系统输入法、完整原生交互、性能和辅助功能尚未验收。
+后续修复与暂停交接见 [第二轮改进阶段记录](docs/verification/2026-10-23-iteration-2.md)。该阶段的源码修复与现有 alpha.1 构建分开记录；alpha.2 打包及重新报送验收仍待后续阶段。
+
+需求与技术方案已获批准，初版实现和代码审查已完成。alpha.1 构建对应生产源码 `836d5eb`；该版的 126 项单元测试、80 项浏览器测试、62 项原生测试、类型检查、构建与签名验证通过。实际范围与保留限制见 [初版验收记录](docs/verification/initial-preview.md)，执行步骤见 [实现计划](docs/superpowers/plans/2026-10-21-initial-rewrite.md)。这是供体验的 alpha；真实系统输入法、完整原生交互、性能和辅助功能尚未验收。
 
 ## 本地构建
 
