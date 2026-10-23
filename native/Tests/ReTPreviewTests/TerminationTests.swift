@@ -4,7 +4,10 @@ import AppKit
 
 @MainActor private final class ReviewObserver: NSObject {
  var responses: [Bool] = []
- @objc func reviewed(_ controller: NSDocumentController, result: Bool, contextInfo: UnsafeMutableRawPointer?) { responses.append(result) }
+ var closeResponses: [Bool] = []
+ var changed: (() -> Void)?
+ @objc func document(_ document: NSDocument, shouldClose: Bool, contextInfo: UnsafeMutableRawPointer?) { closeResponses.append(shouldClose); changed?() }
+ @objc func reviewed(_ controller: NSDocumentController, result: Bool, contextInfo: UnsafeMutableRawPointer?) { responses.append(result); changed?() }
 }
 final class TerminationTests: RecoveryIsolatedTestCase {
  @MainActor func testReviewEntryIncludesNativeCleanWebPendingAndCoalescesRetry() async throws {
@@ -39,6 +42,72 @@ final class TerminationTests: RecoveryIsolatedTestCase {
   XCTAssertEqual(observer.responses, [false, false, true])
   XCTAssertTrue(controller.documents.isEmpty)
   XCTAssertNil(environment.recoveryStore.latest(documentID: document.state.documentID))
+ }
+ @MainActor func testCloseSheetSavePreparationTimeoutReleasesEveryWaiterAndRejectsLateCommit() async throws {
+  let controller = DocumentTestEnvironment.controller
+  let document = try await attachEditor(source:"saved")
+  let target = environment.root.appendingPathComponent("original.md")
+  let queuedTarget = environment.root.appendingPathComponent("queued-copy.md")
+  try Data("saved".utf8).write(to:target)
+  document.fileURL = target; document.fileType = "net.daringfireball.markdown"
+  let window = NSWindow(contentRect:NSRect(x:0,y:0,width:400,height:300),styleMask:[.titled],backing:.buffered,defer:false)
+  document.addWindowController(NSWindowController(window:window))
+  controller.addDocument(document)
+  var release: ((Result<Void,Error>) -> Void)?
+  defer { environment.close(document); release?(.success(())); controller.removeDocument(document) }
+  _ = try await evaluateEditor(document,"const e=document.querySelector('.ProseMirror');e.focus();const r=document.createRange();r.selectNodeContents(e);const s=window.getSelection();s.removeAllRanges();s.addRange(r);document.execCommand('insertText',false,'dirty');")
+  try await eventually { document.state.received.source == "dirty" }
+  let confirmation = NSAlert(); confirmation.messageText = "Test-owned asset confirmation"; confirmation.addButton(withTitle:"Continue")
+  var preparations = 0
+  var queuedPreparations = 0
+  document.prepareAssetsForSave = { url,_,completion in
+   preparations += 1
+   if url == queuedTarget { queuedPreparations += 1 }
+   if preparations == 1 {
+    release = completion
+    // Production asset preparation can ask the user to confirm unmanaged references.
+    // Keep that user-deliberation phase separate from the stalled preparation after it.
+    confirmation.beginSheetModal(for:window) { _ in }
+   } else { completion(.failure(CocoaError(.userCancelled))) }
+  }
+  let observer = ReviewObserver()
+  controller.reviewUnsavedDocuments(withAlertTitle:nil,cancellable:true,delegate:observer,didReviewAllSelector:#selector(ReviewObserver.reviewed(_:result:contextInfo:)),contextInfo:nil)
+  try await eventually { window.attachedSheet != nil }
+  window.endSheet(window.attachedSheet!,returnCode:.alertFirstButtonReturn) // actual close-sheet Save
+  try await eventually { preparations == 1 && window.attachedSheet === confirmation.window }
+  for _ in 0..<2 { document.canClose(withDelegate:observer,shouldClose:#selector(ReviewObserver.document(_:shouldClose:contextInfo:)),contextInfo:nil) }
+  controller.closeAllDocuments(withDelegate:observer,didCloseAllSelector:#selector(ReviewObserver.reviewed(_:result:contextInfo:)),contextInfo:nil)
+  var queuedCompletions = 0
+  document.save(to:queuedTarget,ofType:"net.daringfireball.markdown",for:.saveAsOperation) { error in XCTAssertEqual((error as? CocoaError)?.code,.userCancelled); queuedCompletions += 1 }
+  try await Task.sleep(nanoseconds:11_000_000_000)
+  XCTAssertEqual(observer.responses,[]); XCTAssertEqual(observer.closeResponses,[])
+  XCTAssertTrue(window.attachedSheet === confirmation.window,"user deliberation must not time out")
+  window.endSheet(confirmation.window,returnCode:.alertFirstButtonReturn)
+  let cancelled = expectation(description:"close Save preparation deadline settles all callers")
+  observer.changed = { if observer.responses.count == 2 && observer.closeResponses.count == 2 { cancelled.fulfill() } }
+  await fulfillment(of:[cancelled],timeout:11)
+  XCTAssertEqual(observer.responses,[false,false]); XCTAssertEqual(observer.closeResponses,[false,false])
+  guard observer.responses == [false,false], observer.closeResponses == [false,false] else { return }
+  try await eventually { queuedCompletions == 1 }
+  XCTAssertEqual(queuedPreparations,1,"the queued Save As must run once; AppKit may also request autosave")
+  XCTAssertFalse(FileManager.default.fileExists(atPath:queuedTarget.path))
+  let held = try await evaluateEditor(document,"return document.querySelector('#workspace').inert")
+  XCTAssertEqual(held as? Bool,false)
+  XCTAssertFalse(document.closed)
+  release?(.success(())) // cancelled prepare must not overwrite the original file
+  XCTAssertEqual(try String(contentsOf:target,encoding:.utf8),"saved")
+  _ = try await evaluateEditor(document,"const e=document.querySelector('.ProseMirror');e.focus();document.execCommand('insertText',false,'after cancellation');")
+  try await eventually { document.state.received.source.contains("after cancellation") }
+  observer.changed = nil
+  controller.closeAllDocuments(withDelegate:observer,didCloseAllSelector:#selector(ReviewObserver.reviewed(_:result:contextInfo:)),contextInfo:nil)
+  try await eventually { window.attachedSheet != nil }
+  window.endSheet(window.attachedSheet!,returnCode:.alertThirdButtonReturn)
+  try await eventually { observer.responses.count == 3 }
+  release?(.success(())) // nor after a subsequent confirmed discard
+  XCTAssertEqual(observer.responses,[false,false,true]); XCTAssertEqual(observer.closeResponses,[false,false])
+  XCTAssertEqual(queuedCompletions,1)
+  XCTAssertEqual(try String(contentsOf:target,encoding:.utf8),"saved")
+  XCTAssertNil(environment.recoveryStore.latest(documentID:document.state.documentID))
  }
  @MainActor func testReviewAndCloseAllOverlapWhileSaveIsInFlight() async throws {
   let controller = DocumentTestEnvironment.controller

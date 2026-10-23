@@ -138,10 +138,13 @@ import AppKit
    saveQueue.append { [weak self] in self?.save(to: url, ofType: typeName, for: saveOperation, completionHandler: completionHandler) }; return
   }
   saveActive = true
+  let isCloseSave = closeSaveCompletion != nil
+  var preparationDeadline: SavePreparationDeadline?
   let isAutomatic = [.autosaveInPlaceOperation, .autosaveElsewhereOperation, .autosaveAsOperation].contains(saveOperation)
   var finished = false
   let finish: (Error?) -> Void = { [weak self] error in
    guard !finished else { return }; finished = true
+   preparationDeadline?.cancel(); preparationDeadline = nil
    guard let self else { completionHandler(error); return }
    self.writeSnapshot = nil; self.saveActive = false
    completionHandler(error)
@@ -153,6 +156,7 @@ import AppKit
    var prepared = false
    let commit: (Result<Void, Error>) -> Void = { [weak self] result in
     guard !prepared, !finished else { return }; prepared = true
+    preparationDeadline?.cancel(); preparationDeadline = nil
     guard let self else { return }
     guard !self.closed else { finish(CocoaError(.userCancelled)); return }
     switch result {
@@ -174,7 +178,17 @@ import AppKit
      }
     }
    }
-   if let prepare = self.prepareAssetsForSave { prepare(url, snapshot, commit) } else { commit(.success(())) }
+   if let prepare = self.prepareAssetsForSave {
+    if isCloseSave {
+     preparationDeadline = SavePreparationDeadline(window: self.windowControllers.first?.window) { [weak self] in
+      // Invalidate asynchronous asset-service work as well as this save's commit.
+      // userCancelled lets NSDocument finish its close-save delegate without a second error sheet.
+      self?.serviceGeneration += 1
+      commit(.failure(CocoaError(.userCancelled)))
+     }
+    }
+    prepare(url, snapshot, commit)
+   } else { commit(.success(())) }
   }
   if isAutomatic { write(state.received) }
   else if let host {
@@ -378,5 +392,43 @@ import AppKit
   if let window = windowControllers.first?.window, window.attachedSheet == nil {
    let alert = NSAlert(error: error); alert.beginSheetModal(for: window)
   }
+ }
+}
+
+/// Owns only cancellable preparation for a close-initiated save. Destination/close
+/// panels precede this phase; asset-confirmation sheets suspend it. Completion
+/// cancels the deadline before NSDocument's non-cancellable system save starts.
+@MainActor private final class SavePreparationDeadline: NSObject {
+ private weak var window: NSWindow?
+ private var expiry: (() -> Void)?
+ private var work: DispatchWorkItem?
+ init(window: NSWindow?, expiry: @escaping () -> Void) {
+  self.window = window; self.expiry = expiry
+  super.init()
+  if let window {
+   NotificationCenter.default.addObserver(self, selector: #selector(sheetWillBegin), name: NSWindow.willBeginSheetNotification, object: window)
+   NotificationCenter.default.addObserver(self, selector: #selector(sheetDidEnd), name: NSWindow.didEndSheetNotification, object: window)
+  }
+  arm()
+ }
+ func cancel() {
+  work?.cancel(); work = nil; expiry = nil
+  NotificationCenter.default.removeObserver(self)
+ }
+ @objc private func sheetWillBegin(_ notification: Notification) { work?.cancel(); work = nil }
+ @objc private func sheetDidEnd(_ notification: Notification) {
+  // Wait until AppKit has detached the old sheet (and attached any queued one).
+  DispatchQueue.main.async { [weak self] in self?.arm() }
+ }
+ private func arm() {
+  work?.cancel(); work = nil
+  guard expiry != nil, window?.attachedSheet == nil else { return }
+  let item = DispatchWorkItem { [weak self] in
+   guard let self, let expiry = self.expiry, self.window?.attachedSheet == nil else { return }
+   self.cancel()
+   expiry()
+  }
+  work = item
+  DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: item)
  }
 }
