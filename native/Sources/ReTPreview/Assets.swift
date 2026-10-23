@@ -305,6 +305,23 @@ final class AssetStore {
     }
    }
   }
+  preflightAssetsForAutosave = { [weak self, weak editor] snapshot,completion in
+   guard let self, let editor else { completion(.failure(CocoaError(.userCancelled))); return }
+   let generation = self.serviceGeneration
+   editor.collectAssets(for:snapshot) { [weak self] result in
+    guard let self, !self.closed, self.serviceGeneration == generation else { completion(.failure(CocoaError(.userCancelled))); return }
+    switch result {
+    case .failure(let error): completion(.failure(error))
+    case .success(let references):
+     completion(.success { [weak self] url,preparedSnapshot,finish in
+      guard let self, !self.closed, self.serviceGeneration == generation, preparedSnapshot == snapshot else { finish(.failure(CocoaError(.userCancelled))); return }
+      // AppKit resolves the autosave URL only after preflight. Keep target checks
+      // and resource copies here, but never hold native file access for a sheet.
+      self.prepareAssetSave(url,snapshot:snapshot,references:references,generation:generation,accept:false,allowConfirmation:false,completion:finish)
+     })
+    }
+   }
+  }
   didCommitSave = { [weak self] _,_ in
    guard let self, let transaction = self.assetTransaction else { return }
    do { try self.assets().commit(transaction); self.assetTransaction = nil }
@@ -314,12 +331,13 @@ final class AssetStore {
   editor.onExportPDF = { [weak self] in self?.pdfExport?.chooseDestination() }
   editor.onExportContent = { [weak self] envelope in self?.pdfExport?.receive(envelope) }
  }
- private func prepareAssetSave(_ target: URL, snapshot: Snapshot, references: [String], generation: Int, accept: Bool, completion: @escaping (Result<Void,Error>) -> Void) {
+ private func prepareAssetSave(_ target: URL, snapshot: Snapshot, references: [String], generation: Int, accept: Bool, allowConfirmation: Bool = true, completion: @escaping (Result<Void,Error>) -> Void) {
   guard !closed, serviceGeneration == generation else { completion(.failure(CocoaError(.userCancelled))); return }
   do {
    assetTransaction = try assets().prepareSave(to:target,snapshot:snapshot,references:references,documentURL:fileURL,acceptUnmanaged:accept)
    completion(.success(()))
   } catch AssetFailure.unmanaged(let paths) {
+   guard allowConfirmation else { completion(.failure(CocoaError(.userCancelled))); return }
    guard let window = windowControllers.first?.window else { completion(.failure(AssetFailure.unmanaged(paths))); return }
    let alert = NSAlert(); alert.messageText = "另存后这些普通图片引用可能失效"
    alert.informativeText = paths.joined(separator:"\n") + "\n这些资源不会被复制。您可以取消，或明确保留原引用。"

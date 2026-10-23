@@ -9,6 +9,9 @@ import AppKit
  private var writeSnapshot: Snapshot?
  private var diskBytes: Data?
  private var saveActive = false
+ private var autosaveActive = false
+ private var autosaveSnapshot: Snapshot?
+ private var autosavePreparation: AssetSavePreparation?
  private var saveQueue: [() -> Void] = []
  private var closeFinished = false
  private var cleanupWaiters: [(Bool) -> Void] = []
@@ -30,7 +33,11 @@ import AppKit
  }
  /// Task 4 installs an asset transaction here. It must finish resources before calling success.
  /// The snapshot is frozen; failure must leave fileURL and state.saved unchanged.
- var prepareAssetsForSave: ((URL, Snapshot, @escaping (Result<Void, Error>) -> Void) -> Void)?
+ typealias AssetSavePreparation = (URL, Snapshot, @escaping (Result<Void, Error>) -> Void) -> Void
+ var prepareAssetsForSave: AssetSavePreparation?
+ /// Resolve asynchronous resource metadata before AppKit owns autosave file access.
+ /// The returned preparation must settle synchronously for the actual native target.
+ var preflightAssetsForAutosave: ((Snapshot, @escaping (Result<AssetSavePreparation, Error>) -> Void) -> Void)?
  var didCommitSave: ((URL, Snapshot) -> Void)?
  override class var autosavesInPlace: Bool { true }
  override class var preservesVersions: Bool { true }
@@ -128,19 +135,53 @@ import AppKit
    recoveryQueue.async { recovery.remove(documentID: record.documentID) }
   }
  }
+ override func autosave(withImplicitCancellability cancellable: Bool, completionHandler: @escaping (Error?) -> Void) {
+  guard !closed else { completionHandler(CocoaError(.userCancelled)); advanceSaveQueue(); return }
+  // AppKit acquires file access before calling our save override. Queue the
+  // entire autosave before it can hold that access while waiting for our save.
+  if saveActive || autosaveActive {
+   saveQueue.append { [weak self] in self?.autosave(withImplicitCancellability: cancellable, completionHandler: completionHandler) }
+   return
+  }
+  autosaveActive = true
+  let snapshot = state.received
+  var finished = false
+  let finish: (Error?) -> Void = { [self] error in
+   guard !finished else { return }; finished = true
+   autosaveSnapshot = nil; autosavePreparation = nil; autosaveActive = false
+   completionHandler(error)
+   advanceSaveQueue()
+  }
+  if let preflight = preflightAssetsForAutosave {
+   var prepared = false
+   preflight(snapshot) { [self] result in
+    guard !prepared, !finished else { return }; prepared = true
+    guard !closed else { finish(CocoaError(.userCancelled)); return }
+    switch result {
+    case .failure(let error): finish(error)
+    case .success(let preparation):
+     autosaveSnapshot = snapshot; autosavePreparation = preparation
+     systemAutosave(cancellable: cancellable, completion: finish)
+    }
+   }
+  } else { systemAutosave(cancellable: cancellable, completion: finish) }
+ }
+ private func systemAutosave(cancellable: Bool, completion: @escaping (Error?) -> Void) {
+  super.autosave(withImplicitCancellability: cancellable, completionHandler: completion)
+ }
  override func save(to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType, completionHandler: @escaping (Error?) -> Void) {
   guard !closed, host?.isReplacing != true, !closeActive || closeSaveCompletion != nil else {
    completionHandler(CocoaError(.userCancelled))
    advanceSaveQueue()
    return
   }
-  if saveActive {
+  let isAutomatic = [.autosaveInPlaceOperation, .autosaveElsewhereOperation, .autosaveAsOperation].contains(saveOperation)
+  if saveActive || (autosaveActive && !isAutomatic) {
    saveQueue.append { [weak self] in self?.save(to: url, ofType: typeName, for: saveOperation, completionHandler: completionHandler) }; return
   }
   saveActive = true
   let isCloseSave = closeSaveCompletion != nil
   var preparationDeadline: SavePreparationDeadline?
-  let isAutomatic = [.autosaveInPlaceOperation, .autosaveElsewhereOperation, .autosaveAsOperation].contains(saveOperation)
   var finished = false
   let finish: (Error?) -> Void = { [weak self] error in
    guard !finished else { return }; finished = true
@@ -178,7 +219,7 @@ import AppKit
      }
     }
    }
-   if let prepare = self.prepareAssetsForSave {
+   if let prepare = (isAutomatic ? self.autosavePreparation : nil) ?? self.prepareAssetsForSave {
     if isCloseSave {
      preparationDeadline = SavePreparationDeadline(window: self.windowControllers.first?.window) { [weak self] in
       // Invalidate asynchronous asset-service work as well as this save's commit.
@@ -190,7 +231,7 @@ import AppKit
     prepare(url, snapshot, commit)
    } else { commit(.success(())) }
   }
-  if isAutomatic { write(state.received) }
+  if isAutomatic { write(autosaveSnapshot ?? state.received) }
   else if let host {
    host.flush { result in
     switch result { case .success(let snapshot): write(snapshot); case .failure(let error): finish(error) }
@@ -198,7 +239,7 @@ import AppKit
   } else { finish(HostFailure.unavailable("编辑器尚未就绪，不能确认全部输入。")) }
  }
  private func advanceSaveQueue() {
-  guard !saveActive, !saveQueue.isEmpty else { return }
+  guard !saveActive, !autosaveActive, !saveQueue.isEmpty else { return }
   saveQueue.removeFirst()()
  }
  private func systemSave(to url: URL, type: String, operation: NSDocument.SaveOperationType, completion: @escaping (Error?) -> Void) {
@@ -243,7 +284,7 @@ import AppKit
     }
    }
   }
-  if saveActive {
+  if saveActive || autosaveActive {
    saveQueue.append(proceed)
    DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
     if !beganFlush { respond(false) }

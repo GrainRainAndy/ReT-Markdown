@@ -53,6 +53,8 @@ final class TerminationTests: RecoveryIsolatedTestCase {
   let window = NSWindow(contentRect:NSRect(x:0,y:0,width:400,height:300),styleMask:[.titled],backing:.buffered,defer:false)
   document.addWindowController(NSWindowController(window:window))
   controller.addDocument(document)
+  document.installAssetServices(document.host!)
+  let prepareAssets = try XCTUnwrap(document.prepareAssetsForSave)
   var release: ((Result<Void,Error>) -> Void)?
   defer { environment.close(document); release?(.success(())); controller.removeDocument(document) }
   _ = try await evaluateEditor(document,"const e=document.querySelector('.ProseMirror');e.focus();const r=document.createRange();r.selectNodeContents(e);const s=window.getSelection();s.removeAllRanges();s.addRange(r);document.execCommand('insertText',false,'dirty');")
@@ -60,7 +62,7 @@ final class TerminationTests: RecoveryIsolatedTestCase {
   let confirmation = NSAlert(); confirmation.messageText = "Test-owned asset confirmation"; confirmation.addButton(withTitle:"Continue")
   var preparations = 0
   var queuedPreparations = 0
-  document.prepareAssetsForSave = { url,_,completion in
+  document.prepareAssetsForSave = { url,snapshot,completion in
    preparations += 1
    if url == queuedTarget { queuedPreparations += 1 }
    if preparations == 1 {
@@ -68,7 +70,7 @@ final class TerminationTests: RecoveryIsolatedTestCase {
     // Production asset preparation can ask the user to confirm unmanaged references.
     // Keep that user-deliberation phase separate from the stalled preparation after it.
     confirmation.beginSheetModal(for:window) { _ in }
-   } else { completion(.failure(CocoaError(.userCancelled))) }
+   } else { prepareAssets(url,snapshot,completion) }
   }
   let observer = ReviewObserver()
   controller.reviewUnsavedDocuments(withAlertTitle:nil,cancellable:true,delegate:observer,didReviewAllSelector:#selector(ReviewObserver.reviewed(_:result:contextInfo:)),contextInfo:nil)
@@ -78,7 +80,7 @@ final class TerminationTests: RecoveryIsolatedTestCase {
   for _ in 0..<2 { document.canClose(withDelegate:observer,shouldClose:#selector(ReviewObserver.document(_:shouldClose:contextInfo:)),contextInfo:nil) }
   controller.closeAllDocuments(withDelegate:observer,didCloseAllSelector:#selector(ReviewObserver.reviewed(_:result:contextInfo:)),contextInfo:nil)
   var queuedCompletions = 0
-  document.save(to:queuedTarget,ofType:"net.daringfireball.markdown",for:.saveAsOperation) { error in XCTAssertEqual((error as? CocoaError)?.code,.userCancelled); queuedCompletions += 1 }
+  document.save(to:queuedTarget,ofType:"net.daringfireball.markdown",for:.saveAsOperation) { error in XCTAssertNil(error); queuedCompletions += 1 }
   try await Task.sleep(nanoseconds:11_000_000_000)
   XCTAssertEqual(observer.responses,[]); XCTAssertEqual(observer.closeResponses,[])
   XCTAssertTrue(window.attachedSheet === confirmation.window,"user deliberation must not time out")
@@ -90,7 +92,9 @@ final class TerminationTests: RecoveryIsolatedTestCase {
   guard observer.responses == [false,false], observer.closeResponses == [false,false] else { return }
   try await eventually { queuedCompletions == 1 }
   XCTAssertEqual(queuedPreparations,1,"the queued Save As must run once; AppKit may also request autosave")
-  XCTAssertFalse(FileManager.default.fileExists(atPath:queuedTarget.path))
+  XCTAssertEqual(try Data(contentsOf:queuedTarget),Data("dirty".utf8))
+  XCTAssertEqual(document.fileURL,queuedTarget)
+  XCTAssertFalse(document.state.isDirty)
   let held = try await evaluateEditor(document,"return document.querySelector('#workspace').inert")
   XCTAssertEqual(held as? Bool,false)
   XCTAssertFalse(document.closed)
@@ -106,6 +110,7 @@ final class TerminationTests: RecoveryIsolatedTestCase {
   release?(.success(())) // nor after a subsequent confirmed discard
   XCTAssertEqual(observer.responses,[false,false,true]); XCTAssertEqual(observer.closeResponses,[false,false])
   XCTAssertEqual(queuedCompletions,1)
+  XCTAssertEqual(try Data(contentsOf:queuedTarget),Data("dirty".utf8))
   XCTAssertEqual(try String(contentsOf:target,encoding:.utf8),"saved")
   XCTAssertNil(environment.recoveryStore.latest(documentID:document.state.documentID))
  }
