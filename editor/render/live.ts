@@ -15,6 +15,7 @@ export class LiveMath {
     private element: HTMLElement,
     private current: () => MathSnapshot | null,
     private displayMode = false,
+    private rendered?: () => void,
   ) {
     this.update();
   }
@@ -66,6 +67,7 @@ export class LiveMath {
           result.status === "ready" ? result.html : mathFallback(current.text);
         this.element.dataset.renderState = result.status;
         this.element.setAttribute("aria-busy", "false");
+        this.rendered?.();
       });
   }
   destroy(): void {

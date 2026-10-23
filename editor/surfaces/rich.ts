@@ -260,6 +260,7 @@ export class RichSurface {
     const id = String(node.attrs.id);
     const dom = document.createElement("section");
     dom.className = "literal";
+    dom.dataset.kind = String(node.attrs.kind);
     dom.contentEditable = "false";
     const label = document.createElement("div");
     label.className = "literal-label";
@@ -288,6 +289,39 @@ export class RichSurface {
     if (node.attrs.kind === "math") {
       dom.append(preview);
     }
+    // Folding is presentation state only. The CodeMirror instance and its mapped
+    // selection survive blur, render completion and re-entry.
+    let editingMath = false;
+    let disposed = false;
+    const showMathSource = () => {
+      editingMath = true;
+      editor.view.dom.hidden = false;
+      label.hidden = false;
+    };
+    const syncMathSource = () => {
+      if (!math || disposed || this.composing) return;
+      const valid =
+        Boolean(getRecord()?.node.attributes.closed) &&
+        String(node.attrs.text).trim().length > 0 &&
+        preview.dataset.renderState === "ready" &&
+        !preview.querySelector(".math-error");
+      const hide = valid && !editingMath;
+      if (editor.view.dom.hidden === hide) return;
+      // Preserve the visible reading anchor when content above it contracts.
+      const selectionNode = window.getSelection()?.focusNode;
+      const selectedElement =
+        selectionNode?.nodeType === 1
+          ? (selectionNode as Element)
+          : selectionNode?.parentElement;
+      const anchor =
+        selectedElement?.closest("p,h1,h2,h3,h4,h5,h6,li,td,th") ?? preview;
+      const top = anchor.getBoundingClientRect().top;
+      const wasVisible = top >= 0 && top < window.innerHeight;
+      editor.view.dom.hidden = hide;
+      label.hidden = hide;
+      if (wasVisible && window.scrollY > 0)
+        window.scrollBy(0, anchor.getBoundingClientRect().top - top);
+    };
     const getRecord = () => this.projection.records.get(String(node.attrs.id));
     const math =
       node.attrs.kind === "math"
@@ -304,6 +338,7 @@ export class RichSurface {
                 : null;
             },
             true,
+            syncMathSource,
           )
         : undefined;
     const owner = (): Owner => ({
@@ -312,6 +347,11 @@ export class RichSurface {
     });
     const editor = new LiteralEditor(dom, {
       label: node.attrs.kind === "math" ? "公式源码" : "代码源码",
+      language: () =>
+        node.attrs.kind === "code" ? String(node.attrs.language ?? "") : "",
+      activate: () => {
+        if (math) showMathSource();
+      },
       source: () => this.options.session.source,
       range: () => {
         const r = getRecord();
@@ -345,6 +385,7 @@ export class RichSurface {
         this.composing = active;
         if (!active) this.refresh();
         this.options.composition(active);
+        if (!active) syncMathSource();
       },
       failure: (text, error) => {
         const r = getRecord();
@@ -407,6 +448,23 @@ export class RichSurface {
         return false;
       },
     });
+    if (math) {
+      // Put the stable preview before the collapsible editing controls.
+      dom.insertBefore(preview, label);
+      dom.addEventListener("focusin", (event) => {
+        if (editor.view.dom.contains(event.target as globalThis.Node))
+          showMathSource();
+      });
+      dom.addEventListener("focusout", () => {
+        // Pointer default handling installs the destination selection after
+        // focusout. Wait one frame so contraction anchors that destination.
+        requestAnimationFrame(() => {
+          if (disposed) return;
+          editingMath = dom.contains(document.activeElement);
+          syncMathSource();
+        });
+      });
+    }
     preview.onclick = () => {
       const r = getRecord();
       if (!r) return;
@@ -415,6 +473,7 @@ export class RichSurface {
       this.options.session.setSelection(
         logical(saved?.anchor ?? at, at, owner()),
       );
+      showMathSource();
       editor.refresh(saved?.anchor ?? at, at);
       editor.focus();
     };
@@ -451,9 +510,11 @@ export class RichSurface {
         updateLabel();
         math?.update();
         editor.refresh();
+        syncMathSource();
         return true;
       },
       destroy: () => {
+        disposed = true;
         math?.destroy();
         this.literals.delete(id);
         editor.destroy();

@@ -4,7 +4,9 @@ import {
   EditorSelection,
   Prec,
   Transaction,
+  Compartment,
 } from "@codemirror/state";
+import { codeLanguage, codeHighlighting } from "./highlighting";
 import { EditorView, keymap } from "@codemirror/view";
 import {
   mapText,
@@ -39,11 +41,15 @@ export interface LiteralOptions {
   failure: (text: string, error: unknown) => void;
   label: string;
   markdown?: boolean;
+  language?: () => string;
+  activate?: () => void;
   image?: (file: File) => void;
 }
 export class LiteralEditor {
   readonly view: EditorView;
   private updating = false;
+  private language = new Compartment();
+  private languageName = "";
   private clipboardFailed = false;
   private copyMode: "markdown" | "plain" | "rich" | null = null;
   private composing = false;
@@ -56,12 +62,15 @@ export class LiteralEditor {
     private options: LiteralOptions,
   ) {
     this.baseline = options.range().text;
+    this.languageName = options.language?.() ?? "";
     this.defaultEnding = newlineAt(options.source(), 0);
     this.view = new EditorView({
       parent,
       state: EditorState.create({
         doc: this.baseline,
         extensions: [
+          this.language.of(codeLanguage(this.languageName)),
+          codeHighlighting,
           EditorView.contentAttributes.of({ "aria-label": options.label }),
           EditorView.lineWrapping,
           keymap.of([
@@ -260,6 +269,13 @@ export class LiteralEditor {
     const range = this.options.range();
     this.updating = true;
     try {
+      const languageName = this.options.language?.() ?? "";
+      if (languageName !== this.languageName) {
+        this.view.dispatch({
+          effects: this.language.reconfigure(codeLanguage(languageName)),
+        });
+        this.languageName = languageName;
+      }
       if (range.text !== this.view.state.doc.toString())
         this.view.dispatch({
           changes: {
@@ -311,12 +327,13 @@ export class LiteralEditor {
   copy(mode: "markdown" | "plain" | "rich"): boolean {
     this.copyMode = mode;
     this.clipboardFailed = false;
-    this.view.focus();
+    this.focus();
     const copied = document.execCommand("copy");
     this.copyMode = null;
     return copied && !this.clipboardFailed;
   }
   focus(): void {
+    this.options.activate?.();
     this.view.focus();
   }
   destroy(): void {

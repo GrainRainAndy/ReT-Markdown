@@ -10,6 +10,7 @@ for (const kind of ["code", "math"] as const)
         block = fence + "\nx\n" + fence,
         initial = "before\n\n" + block + "\n\nafter";
       await load(page, initial);
+      if (kind === "math") await page.locator(".math-preview").click();
       const cm = page.getByLabel(kind === "code" ? "代码源码" : "公式源码", {
         exact: true,
       });
@@ -243,6 +244,7 @@ test("math drops older node/revision results and superseded export responses", a
   );
   await load(page, "before\n\n$$\nx\n$$");
   const cm = page.getByLabel("公式源码", { exact: true });
+  await page.locator(".math-preview").click();
   await cm.click();
   await page.keyboard.press("ControlOrMeta+a");
   await page.keyboard.type("y");

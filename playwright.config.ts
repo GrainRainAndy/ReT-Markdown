@@ -8,7 +8,9 @@ export default defineConfig({
   timeout: 15000,
   use: { baseURL: "http://127.0.0.1:4173", browserName: "chromium" },
   webServer: {
-    command: "npm run dev",
+    command: process.env.RET_TEST_WEB_ROOT
+      ? "node scripts/serve-web.mjs"
+      : "npm run dev",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: false,
   },

@@ -140,6 +140,15 @@ code,
   padding: 8px 14px 14px;
   white-space: normal;
 }
+.literal[data-kind="math"] {
+  background: transparent;
+  padding: 0;
+}
+.literal[data-kind="math"] .cm-editor {
+  background: var(--code);
+  padding: 8px 14px;
+  border-radius: var(--code-radius);
+}
 .literal-label {
   font-size: 11px;
   color: var(--muted);
@@ -158,6 +167,15 @@ code,
 }
 .cm-scroller {
   overflow: auto;
+}
+.literal .cm-editor .cm-scroller {
+  font-family: inherit;
+  line-height: inherit;
+}
+.source-surface .cm-editor .cm-scroller {
+  font-family: inherit;
+  /* Preserve source-mode density and established viewport mapping. */
+  line-height: 1.4;
 }
 .cm-cursor {
   border-left-color: var(--fg) !important;
@@ -366,5 +384,52 @@ footer button {
   font-size: var(--h5);
 }
 .ProseMirror h6 {
+  color: var(--muted);
   font-size: var(--h6);
+}
+
+/* Offline parser tokens share explicit light/dark palette variables. */
+:root {
+  --syntax-keyword: #a626a4;
+  --syntax-string: #22863a;
+  --syntax-number: #005cc5;
+  --syntax-comment: #6a737d;
+  --syntax-type: #986801;
+  --syntax-function: #6f42c1;
+}
+:root[data-appearance="dark"] {
+  --syntax-keyword: #ff7b72;
+  --syntax-string: #a5d6ff;
+  --syntax-number: #79c0ff;
+  --syntax-comment: #8b949e;
+  --syntax-type: #ffa657;
+  --syntax-function: #d2a8ff;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-appearance="system"] {
+    --syntax-keyword: #ff7b72;
+    --syntax-string: #a5d6ff;
+    --syntax-number: #79c0ff;
+    --syntax-comment: #8b949e;
+    --syntax-type: #ffa657;
+    --syntax-function: #d2a8ff;
+  }
+}
+.tok-keyword {
+  color: var(--syntax-keyword);
+}
+.tok-string {
+  color: var(--syntax-string);
+}
+.tok-number {
+  color: var(--syntax-number);
+}
+.tok-comment {
+  color: var(--syntax-comment);
+}
+.tok-type {
+  color: var(--syntax-type);
+}
+.tok-function {
+  color: var(--syntax-function);
 }
