@@ -1,6 +1,6 @@
 # ReT Markdown
 
-ReT Markdown 已于 2026-10-21 归档旧实现，并从独立根提交重新开发。当前分支 `rewrite/from-zero` 已产出个人 macOS Markdown 编辑器修复候选 **0.2.0-alpha.2 (2)**，包含结构化编辑、源码模式、图片、保存恢复与原生 PDF，待独立验收。
+ReT Markdown 已于 2026-10-21 归档旧实现，并从独立根提交重新开发。当前分支 `rewrite/from-zero` 已产出个人 macOS Markdown 编辑器修复候选 **0.2.0-alpha.3 (3)**，包含结构化编辑、源码模式、图片、保存恢复与原生 PDF，待独立验收。
 
 重写以本地 macOS Markdown 写作为默认产品定位，以仓库内 **Typora 1.14.10（7786）** 为行为研究对象。旧版的编辑内核、模块边界、依赖清单和验收结论均不作为新实现的既定方案。
 
@@ -21,6 +21,8 @@ alpha.2 报送记录见 [第二轮改进与验收记录](docs/verification/2026-
 
 [2026-10-24 原生续验](docs/verification/2026-10-24-alpha2-native-review.md)：补齐可见公式失焦、部分关闭/保存和菜单 PDF 证据；真实拼音关闭取消后的首个组合提交出现拼音残留（B08），当前验收不通过。完整退出矩阵及间歇性保存面板异常仍待确认。
 
+[B08 修复与 alpha.3 复验记录](docs/verification/2026-10-24-b08-repair.md)：源码 `490cef3` 恢复关闭取消后的编辑器焦点。238 项单元、126 项同包浏览器全量、9 项 B08 专项及 81 项原生测试通过；隔离诊断版真实拼音通过，正式候选拼音矩阵与实体键盘复核仍待完成，尚未关闭 B08 验收。
+
 需求与技术方案已获批准，初版实现和代码审查已完成。alpha.1 构建对应生产源码 `836d5eb`；该版的 126 项单元测试、80 项浏览器测试、62 项原生测试、类型检查、构建与签名验证通过。实际范围与保留限制见 [初版验收记录](docs/verification/initial-preview.md)，执行步骤见 [实现计划](docs/superpowers/plans/2026-10-21-initial-rewrite.md)。这是供体验的 alpha；真实系统输入法、完整原生交互、性能和辅助功能尚未验收。
 
 ## 本地构建
@@ -32,7 +34,7 @@ npm ci
 bash scripts/build-app.sh
 ```
 
-输出为 `build/rewrite/0.2.0-alpha.2/ReT Markdown Preview.app`，使用独立标识 `com.retmarkdown.rewrite.preview`，保留 alpha.1 构建。`fixtures/preview.md` 提供体验文稿，验收时使用副本。
+输出为 `build/rewrite/0.2.0-alpha.3/ReT Markdown Preview.app`，使用独立标识 `com.retmarkdown.rewrite.preview`，保留 alpha.1 / alpha.2 构建。`fixtures/preview.md` 提供体验文稿，验收时使用副本。
 
 ## 预览版操作
 
