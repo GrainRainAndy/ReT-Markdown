@@ -253,8 +253,13 @@ function updateStatus(): void {
 const pendingFlushes = new Map<string, ReturnType<typeof setTimeout>>();
 let holdForClose = false;
 let inputHeld = false;
+let heldEditorFocus = false;
 function finishFlush(requestId: string): void {
   if (holdForClose && !draft) {
+    // inert blurs the editor while leaving its DOM selection in place. WK can
+    // then insert preedit text without compositionstart unless focus is restored
+    // before the next key. Reentrant flushes must retain the first focus owner.
+    if (!inputHeld) heldEditorFocus = markdownOwnsFocus();
     inputHeld = true;
     workspace.inert = true;
     publishCommandState();
@@ -410,6 +415,7 @@ function load(payload: Record<string, unknown>): void {
   pendingFlushes.clear();
   holdForClose = false;
   inputHeld = false;
+  heldEditorFocus = false;
   unsubscribe?.();
   exportRequest?.abort.abort();
   exportRequest = undefined;
@@ -477,12 +483,19 @@ function receive(message: Envelope): void {
     case "command":
       if (typeof p.id === "string") execute(p.id);
       break;
-    case "flushRelease":
+    case "flushRelease": {
+      const restoreEditorFocus = inputHeld && heldEditorFocus;
       holdForClose = false;
       inputHeld = false;
+      heldEditorFocus = false;
       workspace.inert = inputHeld || !!draft || host.replacing;
+      if (restoreEditorFocus && !workspace.inert && !composing) {
+        if (mode === "rich") rich?.focus();
+        else literal?.focus();
+      }
       publishCommandState();
       break;
+    }
     case "flush":
       holdForClose ||= p.holdInput === true;
       imageRequests.clear();

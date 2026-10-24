@@ -36,7 +36,7 @@ version = json.loads((root / "package.json").read_text())["version"]
 app = root / "build/rewrite" / version / "ReT Markdown Preview.app"
 plist = plistlib.loads((app / "Contents/Info.plist").read_bytes())
 assert plist["CFBundleShortVersionString"] == version
-assert plist["CFBundleVersion"] == "2"
+assert plist["CFBundleVersion"] == "3"
 bundle = [item(p, app) for p in sorted(app.rglob("*")) if p.is_file()]
 web = app / "Contents/Resources/web"
 dist = root / "dist/web"
@@ -55,19 +55,13 @@ signature = subprocess.run(["codesign", "-d", "--verbose=4", str(app)], capture_
 canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 node = Path(command("which", "node")).resolve()
 record = {"sourceCommit": head, "version": version, "build": plist["CFBundleVersion"], "bundleID": plist["CFBundleIdentifier"], "appPath": str(app), "macOS": command("sw_vers", "-productVersion"), "osBuild": command("sw_vers", "-buildVersion"), "architecture": command("uname", "-m"), "node": {"path": str(node), "version": command(str(node), "--version"), "sha256": digest(node.read_bytes())}, "nativeReleaseBinary": {"path": str(release), "sha256": digest(release.read_bytes()), "uuid": release_uuid}, "nativeBundleUUID": bundle_uuid, "signature": signature, "inputManifestSHA256": digest(canonical(inputs)), "bundleManifestSHA256": digest(canonical(bundle)), "bundleBytes": sum(p["bytes"] for p in bundle), "inputsMatchCommit": True, "bundledWebMatchesDist": True, "testWebEntry": str(web / "index.html"), "digestAlgorithm": "SHA256 of compact UTF8 JSON sorted keys and path-ordered entries, ensure_ascii=False", "inputs": inputs, "bundle": bundle}
-evidence_root = root / "build/rewrite/verification/2026-10-23/iteration-2"
-visual = evidence_root / "visual"
-final_logs = ["final-commands.txt", "unit-final.log", "typecheck-final.log", "build-alpha2-final.log", "browser-bundled-final.log", "native-bundled-final.log", "measure-final.log", "measurements.json", "highlight-samples.json", "selection-pixels.json", "measure-selection.swift"]
-evidence_paths = [visual / name for name in final_logs]
-evidence_paths += list(visual.glob("*.png"))
-pdf_root = evidence_root / "pdf"
-evidence_paths += [pdf_root / name for name in ["print-layout.pdf", "tall-image.pdf", "print-layout-info.txt", "tall-image-info.txt", "print-layout.txt", "render.log"]]
-evidence_paths += list((pdf_root / "rendered").glob("*.png"))
-child_matches = re.findall(r"Child-process evidence: (.+)", (visual / "native-bundled-final.log").read_text())
-if child_matches:
-    child_root = Path(child_matches[-1])
-    child_root.relative_to(evidence_root)
-    evidence_paths += [p for p in child_root.rglob("*") if p.is_file()]
+evidence_root = root / "build/rewrite/verification/2026-10-24/b08-fix"
+evidence_paths = list(evidence_root.glob("*.log"))
+evidence_paths += list(evidence_root.glob("*.jsonl"))
+evidence_paths += list(evidence_root.glob("*.md"))
+evidence_paths += list(evidence_root.glob("*.txt"))
+for directory in ("pdf", "lifecycle", "saved", "native-qa"):
+    evidence_paths += [p for p in (evidence_root / directory).rglob("*") if p.is_file()]
 evidence = [item(p, evidence_root) for p in sorted(set(evidence_paths))]
 record["evidence"] = evidence
 record["evidenceManifestSHA256"] = digest(canonical(evidence))
