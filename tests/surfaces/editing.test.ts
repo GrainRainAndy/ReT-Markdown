@@ -69,3 +69,39 @@ it("empty nested item Enter and Backspace remove exactly the parent marker inden
     { from: 7, to: 13, insert: "* " },
   ]);
 });
+
+it.each([
+  ["* item", "* item  \n  ", "* item  \n  next\n* "],
+  ["9. item", "9. item  \n   ", "9. item  \n   next\n10. "],
+  ["* [x] item", "* [x] item  \n  ", "* [x] item  \n  next\n* [ ] "],
+  ["> * item", "> * item  \n>   ", "> * item  \n>   next\n> * "],
+  ["* A\n  * item", "* A\n  * item  \n    ", "* A\n  * item  \n    next\n  * "],
+])(
+  "hard break and subsequent Enter preserve the owning list: %s",
+  (before, broken, continued) => {
+    expect(run(before, before.length, "enter", true).source).toBe(broken);
+    const source = broken + "next";
+    const session = run(source, source.length, "enter");
+    expect(session.source).toBe(continued);
+    session.undo();
+    expect(session.source).toBe(source);
+    session.redo();
+    expect(session.source).toBe(continued);
+  },
+);
+it("list continuation uses CRLF and preserves an untouched following block", () => {
+  const source = "* item\r\n\r\nkeep  ";
+  expect(run(source, 6, "enter", true).source).toBe(
+    "* item  \r\n  \r\n\r\nkeep  ",
+  );
+  const continued = "* item  \r\n  next\r\n\r\nkeep  ";
+  expect(run(continued, 16, "enter").source).toBe(
+    "* item  \r\n  next\r\n* \r\n\r\nkeep  ",
+  );
+});
+it.each([
+  ["* > item", "* > item  \n  > "],
+  ["* A\n  > item", "* A\n  > item  \n  > "],
+])("hard break retains quote nested inside list: %s", (before, after) => {
+  expect(run(before, before.length, "enter", true).source).toBe(after);
+});

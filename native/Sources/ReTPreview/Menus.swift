@@ -2,6 +2,7 @@ import AppKit
 struct CommandDefinition: Decodable {
  let id: String, title: String, group: String, key: String
  let modifiers: [String]
+ let command: Bool?
  static func load(from url: URL? = Bundle.main.resourceURL?.appendingPathComponent("web/commands.json")) -> [CommandDefinition] {
   guard let url, let data = try? Data(contentsOf:url) else { return [] }
   return (try? JSONDecoder().decode([CommandDefinition].self,from:data)) ?? []
@@ -21,17 +22,19 @@ struct CommandDefinition: Decodable {
   let definitions = CommandDefinition.load()
   func commands(_ menu: NSMenu, _ group: String) {
    for definition in definitions where definition.group == group {
-    let entry = NSMenuItem(title:definition.title,action:#selector(MarkdownDocument.editorCommand(_:)),keyEquivalent:definition.key)
+    let key = definition.key == "backspace" ? "\u{8}" : definition.key
+    let entry = NSMenuItem(title:definition.title,action:#selector(MarkdownDocument.editorCommand(_:)),keyEquivalent:key)
     entry.representedObject = definition.id
-    entry.keyEquivalentModifierMask = [.command]
+    entry.keyEquivalentModifierMask = definition.command == false ? [] : [.command]
     if definition.modifiers.contains("shift") { entry.keyEquivalentModifierMask.insert(.shift) }
     if definition.modifiers.contains("alt") { entry.keyEquivalentModifierMask.insert(.option) }
+    if definition.modifiers.contains("control") { entry.keyEquivalentModifierMask.insert(.control) }
     menu.addItem(entry)
    }
   }
   let app = menu("ReT Markdown Preview")
   item(app, "关于 ReT Markdown Preview", #selector(NSApplication.orderFrontStandardAboutPanel(_:)))
-  app.addItem(.separator()); item(app, "隐藏 ReT Markdown Preview", #selector(NSApplication.hide(_:)), "h")
+  app.addItem(.separator()); item(app, "隐藏 ReT Markdown Preview", #selector(NSApplication.hide(_:)))
   item(app, "退出 ReT Markdown Preview", #selector(NSApplication.terminate(_:)), "q")
   let file = menu("文件")
   item(file, "新建", #selector(NSDocumentController.newDocument(_:)), "n")

@@ -70,6 +70,17 @@ export function replaceIntent(
 export function flatten(nodes: ProjectionNode[]): ProjectionNode[] {
   return nodes.flatMap((n) => [n, ...flatten(n.children)]);
 }
+/** Continue parser-confirmed opening containers, without repeating list markers. */
+export function containerContinuation(
+  source: string,
+  bodyFrom: number,
+): string {
+  const start = source.lastIndexOf("\n", Math.max(0, bodyFrom - 1)) + 1;
+  return source
+    .slice(start, bodyFrom)
+    .replace(/(?:[-+*]|\d+[.)])[ \t]+/g, (marker) => " ".repeat(marker.length))
+    .replace(/\[[ xX]\][ \t]+$/, "");
+}
 function listExitPrefix(
   source: string,
   projection: DocumentProjection,
@@ -115,7 +126,48 @@ export function enterIntent(
     eol = newlineAt(source, from);
   const lineStart = source.lastIndexOf("\n", Math.max(0, from - 1)) + 1;
   const line = source.slice(lineStart, from);
-  if (shift) return replaceIntent(from, to, "  " + eol);
+  const listPattern =
+    /^((?:[ \t]*>[ \t]?)*)([ \t]*)([-+*]|\d+[.)])([ \t]+)(\[[ xX]\][ \t]+)?(.*)$/;
+  // A continuation line has no marker of its own. Resolve the innermost
+  // source container before applying line-local editing rules.
+  const item = flatten(projection.blocks)
+    .filter((n) => {
+      if (n.type !== "listItem" || n.from > from) return false;
+      if (n.to >= to) return true;
+      const tail = source.slice(n.to, to);
+      return (
+        /^(?:[ \t]*|[ \t]*(?:\r\n|\n)[ \t>]*)$/.test(tail) &&
+        source.slice(lineStart, from).length > 0
+      );
+    })
+    .at(-1);
+  const itemStart = item
+    ? source.lastIndexOf("\n", Math.max(0, item.from - 1)) + 1
+    : lineStart;
+  const itemLineEnd = source.indexOf("\n", itemStart);
+  const itemPrefix =
+    item &&
+    listPattern.exec(
+      source
+        .slice(itemStart, itemLineEnd < 0 ? source.length : itemLineEnd)
+        .replace(/\r$/, ""),
+    );
+  const paragraph = flatten(projection.blocks).find(
+    (n) => n.type === "paragraph" && n.from <= from && n.to >= to,
+  );
+  const continuation =
+    paragraph &&
+    (item ||
+      flatten(projection.blocks).some(
+        (n) => n.type === "blockquote" && n.from <= from && n.to >= to,
+      ))
+      ? containerContinuation(source, paragraph.from)
+      : itemPrefix
+        ? itemPrefix[1]! +
+          itemPrefix[2]! +
+          " ".repeat(itemPrefix[3]!.length + itemPrefix[4]!.length)
+        : (/^(?:[ \t]*>[ \t]?)+/.exec(line)?.[0] ?? "");
+  if (shift) return replaceIntent(from, to, "  " + eol + continuation);
   const heading = flatten(projection.blocks).find(
     (n) => n.type === "heading" && n.from <= from && n.to >= to,
   );
@@ -138,10 +190,8 @@ export function enterIntent(
     (n) => n.type === "gap" && n.from === from,
   );
   if (gap) return replaceIntent(from, to, eol);
-  const list =
-    /^((?:[ \t]*>[ \t]?)*)([ \t]*)([-+*]|\d+[.)])([ \t]+)(\[[ xX]\][ \t]+)?(.*)$/.exec(
-      line,
-    );
+  const currentList = listPattern.exec(line);
+  const list = currentList ?? (itemStart < lineStart ? itemPrefix : null);
   if (list) {
     const [
       ,
@@ -152,7 +202,7 @@ export function enterIntent(
       task = "",
       body = "",
     ] = list;
-    if (!body)
+    if (!body && currentList)
       return replaceIntent(
         lineStart,
         from,

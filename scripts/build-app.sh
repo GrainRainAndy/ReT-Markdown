@@ -2,8 +2,12 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-VERSION="0.2.0-alpha.3"
+VERSION="0.2.0-alpha.4"
 APP="$ROOT/build/rewrite/$VERSION/ReT Markdown Preview.app"
+if [[ -e "$APP" ]]; then
+  echo "Candidate already exists: $APP" >&2
+  exit 1
+fi
 npm run build
 swift build --package-path native -c release
 BIN_DIR="$(swift build --package-path native -c release --show-bin-path)"
@@ -21,8 +25,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>ReT Markdown Preview</string>
 <key>CFBundleExecutable</key><string>ReTPreview</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.0-alpha.3</string>
-<key>CFBundleVersion</key><string>3</string>
+<key>CFBundleShortVersionString</key><string>0.2.0-alpha.4</string>
+<key>CFBundleVersion</key><string>4</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>

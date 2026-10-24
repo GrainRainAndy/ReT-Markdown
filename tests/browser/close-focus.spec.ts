@@ -89,7 +89,7 @@ test("release while composition is pending keeps the composing editor intact", a
   await bridge(page, "flush", { holdInput: true });
   await bridge(page, "flushRelease");
   await expect(prose).toBeFocused();
-  await expect(page.locator("#status")).toContainText("正在输入");
+  await expect(page.locator("#status")).toHaveText("已保存基线 · 4 字符");
   await expect(page.locator("#workspace")).toHaveJSProperty("inert", false);
   expect(await source(page)).toBeUndefined();
   await prose.dispatchEvent("compositionend");

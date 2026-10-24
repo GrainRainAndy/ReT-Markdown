@@ -24,8 +24,8 @@
     "id": "copyMarkdown",
     "title": "拷贝 Markdown",
     "group": "edit",
-    "key": "",
-    "modifiers": []
+    "key": "c",
+    "modifiers": ["shift"]
   },
   {
     "id": "copyPlain",
@@ -52,8 +52,8 @@
     "id": "replace",
     "title": "替换",
     "group": "edit",
-    "key": "f",
-    "modifiers": ["alt"]
+    "key": "h",
+    "modifiers": []
   },
   {
     "id": "bold",
@@ -73,15 +73,16 @@
     "id": "strike",
     "title": "删除线",
     "group": "format",
-    "key": "",
-    "modifiers": []
+    "key": "`",
+    "modifiers": ["control", "shift"],
+    "command": false
   },
   {
     "id": "inlineCode",
     "title": "行内代码",
     "group": "format",
-    "key": "",
-    "modifiers": []
+    "key": "`",
+    "modifiers": ["shift"]
   },
   {
     "id": "link",
@@ -136,50 +137,50 @@
     "id": "bulletList",
     "title": "无序列表",
     "group": "format",
-    "key": "",
-    "modifiers": []
+    "key": "u",
+    "modifiers": ["alt"]
   },
   {
     "id": "orderedList",
     "title": "有序列表",
     "group": "format",
-    "key": "",
-    "modifiers": []
+    "key": "o",
+    "modifiers": ["alt"]
   },
   {
     "id": "quote",
     "title": "引用",
     "group": "format",
-    "key": "",
-    "modifiers": []
+    "key": "q",
+    "modifiers": ["alt"]
   },
   {
     "id": "codeBlock",
     "title": "代码块",
     "group": "format",
-    "key": "",
-    "modifiers": []
+    "key": "c",
+    "modifiers": ["alt"]
   },
   {
     "id": "mathBlock",
     "title": "数学块",
     "group": "format",
-    "key": "",
-    "modifiers": []
+    "key": "b",
+    "modifiers": ["alt"]
   },
   {
     "id": "table",
     "title": "表格",
     "group": "format",
-    "key": "",
-    "modifiers": []
+    "key": "t",
+    "modifiers": ["alt"]
   },
   {
     "id": "insertImage",
     "title": "插入图片…",
     "group": "format",
-    "key": "",
-    "modifiers": []
+    "key": "i",
+    "modifiers": ["control"]
   },
   {
     "id": "codeLanguage",
@@ -213,8 +214,8 @@
     "id": "tableDeleteRow",
     "title": "删除行",
     "group": "table",
-    "key": "",
-    "modifiers": []
+    "key": "backspace",
+    "modifiers": ["shift"]
   },
   {
     "id": "tableAddColumn",
@@ -255,8 +256,8 @@
     "id": "toggleSource",
     "title": "切换源码",
     "group": "view",
-    "key": "m",
-    "modifiers": ["shift"]
+    "key": "/",
+    "modifiers": []
   },
   {
     "id": "zoomIn",

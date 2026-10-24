@@ -7,7 +7,14 @@ import {
 import { EditorView, type NodeView } from "prosemirror-view";
 import type { Node as PMNode } from "prosemirror-model";
 import type { DocumentSession } from "../core/document";
-import type { LogicalSelection, Patch, Owner } from "../core/types";
+import type {
+  LogicalSelection,
+  Patch,
+  Owner,
+  SourceRange,
+} from "../core/types";
+import { collectRevealRanges } from "./inline-presentation";
+import { buildProjection } from "../syntax/projection";
 import { mapText, mapTextToSource } from "../syntax/mapping";
 import { RichProjection, schema } from "./projection";
 import { LiteralEditor } from "./literal";
@@ -66,10 +73,12 @@ export class RichSurface {
         this.deferred = false;
         this.refresh();
       }
+      this.updatePresentation();
     });
   };
   private literals = new Map<string, LiteralEditor>();
   private copyMode: "markdown" | "plain" | "rich" = "markdown";
+  private pasting = false;
   private mathBookmarks = new Map<string, { anchor: number; head: number }>();
   constructor(
     parent: HTMLElement,
@@ -93,7 +102,12 @@ export class RichSurface {
           data.getData("text/markdown") || data.getData("text/plain");
         if (text) {
           event.preventDefault();
-          this.replace(text);
+          this.pasting = true;
+          try {
+            this.replace(text);
+          } finally {
+            this.pasting = false;
+          }
           return true;
         }
         const file = [...data.files].find((f) => f.type.startsWith("image/"));
@@ -123,6 +137,14 @@ export class RichSurface {
         return true;
       },
       handleDOMEvents: {
+        focus: () => {
+          queueMicrotask(() => this.updatePresentation());
+          return false;
+        },
+        blur: () => {
+          queueMicrotask(() => this.updatePresentation());
+          return false;
+        },
         copy: (_, event) => this.clipboard(event as ClipboardEvent, false),
         cut: (_, event) => this.clipboard(event as ClipboardEvent, true),
         compositionstart: () => {
@@ -137,6 +159,7 @@ export class RichSurface {
             this.commitView();
             this.committingComposition = false;
             options.composition(false);
+            this.updatePresentation();
           });
           return false;
         },
@@ -184,8 +207,33 @@ export class RichSurface {
         this.options.session.setSelection(safe);
         if (safe.anchor.offset !== anchor || safe.head.offset !== head)
           this.refresh();
+        else this.updatePresentation();
       }
     }
+  }
+  private updatePresentation(): void {
+    if (this.composing || this.rendering || this.view.isDestroyed) return;
+    const ranges = this.view.hasFocus()
+      ? collectRevealRanges(
+          this.projection.projection,
+          this.options.session.selection,
+        )
+      : [];
+    if (
+      JSON.stringify(ranges) !== JSON.stringify(this.projection.revealRanges) ||
+      (!this.view.hasFocus() &&
+        [...this.projection.records.values()].some(
+          (r) => r.node.attributes.pendingHeading,
+        ))
+    )
+      this.refresh();
+  }
+  private selectionRange(selection: LogicalSelection): SourceRange {
+    const from = Math.min(selection.anchor.offset, selection.head.offset),
+      to = Math.max(selection.anchor.offset, selection.head.offset);
+    if (this.projection.markerRanges.some((r) => from < r.to && to > r.from))
+      return { from, to };
+    return clipboardRange(this.options.session.source, selection);
   }
   private commitView(): void {
     if (this.composing || this.rendering) return;
@@ -739,7 +787,7 @@ export class RichSurface {
       selection.anchor.offset !== selection.head.offset
     ) {
       event.preventDefault();
-      const range = clipboardRange(this.options.session.source, selection);
+      const range = this.selectionRange(selection);
       this.options.apply(replaceIntent(range.from, range.to, ""));
       return true;
     }
@@ -754,10 +802,7 @@ export class RichSurface {
         event.key === "Backspace",
         event.metaKey ? "line" : "word",
       );
-      const safe = clipboardRange(
-        this.options.session.source,
-        logical(range.from, range.to, s.owner),
-      );
+      const safe = this.selectionRange(logical(range.from, range.to, s.owner));
       this.options.apply(replaceIntent(safe.from, safe.to, "", s.owner));
       return true;
     }
@@ -807,7 +852,7 @@ export class RichSurface {
     if (event.key === "Backspace" || event.key === "Delete") {
       event.preventDefault();
       const s = this.options.session.selection;
-      const range = clipboardRange(this.options.session.source, s);
+      const range = this.selectionRange(s);
       if (range.from !== range.to)
         this.options.apply(replaceIntent(range.from, range.to, ""));
       else {
@@ -842,7 +887,7 @@ export class RichSurface {
         "单元格粘贴按单行文本插入；原始 Markdown 请使用源码模式",
       );
     }
-    const range = clipboardRange(this.options.session.source, s);
+    const range = this.selectionRange(s);
     if (cell?.cell.attributes.virtual) {
       this.options.apply(virtualCellIntent(cell.cell, text, s.owner));
       return;
@@ -920,7 +965,7 @@ export class RichSurface {
     if (this.composing || !event.clipboardData) return false;
     this.captureSelection();
     const s = this.options.session.selection;
-    const range = clipboardRange(this.options.session.source, s);
+    const range = this.selectionRange(s);
     const cells =
       s.kind === "cells" && s.cellRange
         ? tableClipboard(
@@ -1228,9 +1273,20 @@ export class RichSurface {
         this.options.session.source,
         previous,
         patch,
-        this.options.session.selection.owner.kind === "prose"
+        !this.pasting &&
+          this.view.hasFocus() &&
+          this.options.session.selection.owner.kind === "prose"
           ? this.options.session.selection.head.offset
           : undefined,
+        this.view.hasFocus()
+          ? collectRevealRanges(
+              // Patches can move, create or remove formatted spans.
+              previous.source === this.options.session.source
+                ? previous.projection
+                : buildProjection(this.options.session.source),
+              this.options.session.selection,
+            )
+          : [],
       );
       let s = this.options.session.selection;
       const literal = this.projection.literalAt(

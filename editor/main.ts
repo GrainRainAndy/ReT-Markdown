@@ -1,4 +1,5 @@
 import commands from "./protocol/commands.json";
+import { matchesShortcut, shortcutLabel } from "./protocol/shortcuts";
 import { safeLink } from "./protocol/links";
 import { typographyCSS } from "./typography";
 import "./styles.css";
@@ -36,7 +37,7 @@ tokenStyle.textContent = typographyCSS;
 document.head.append(tokenStyle);
 const app = document.querySelector<HTMLElement>("#app")!;
 app.innerHTML =
-  '<div id="notice" role="alert" hidden></div><section id="workspace" aria-label="文稿"></section><footer><span id="status" role="status"></span><button id="mode" title="切换源码（⌘⇧M）">源码</button></footer><section id="recovery" role="dialog" aria-label="恢复未提交输入" hidden><h2>恢复未提交输入</h2><p id="recovery-reason"></p><details><summary>原始输入草稿</summary><pre id="draft-content"></pre></details><label>待应用的完整 Markdown<textarea id="recovery-source" spellcheck="false"></textarea></label><button id="recover-apply">应用恢复文本</button><button id="recover-discard">放弃未提交草稿</button></section>';
+  '<div id="notice" role="alert" hidden></div><section id="workspace" aria-label="文稿"></section><footer><span id="status" role="status"></span><button id="mode" title="切换源码">源码</button></footer><section id="recovery" role="dialog" aria-label="恢复未提交输入" hidden><h2>恢复未提交输入</h2><p id="recovery-reason"></p><details><summary>原始输入草稿</summary><pre id="draft-content"></pre></details><label>待应用的完整 Markdown<textarea id="recovery-source" spellcheck="false"></textarea></label><button id="recover-apply">应用恢复文本</button><button id="recover-discard">放弃未提交草稿</button></section>';
 const workspace = document.querySelector<HTMLElement>("#workspace")!,
   status = document.querySelector<HTMLElement>("#status")!,
   modeButton = document.querySelector<HTMLButtonElement>("#mode")!,
@@ -246,8 +247,10 @@ function openLink(url: string): void {
   else notice("此链接地址不支持安全打开");
 }
 function updateStatus(): void {
-  status.textContent = `${draft ? "输入待恢复" : composing ? "正在输入" : session.dirty ? "未保存" : "已保存基线"} · ${mode === "rich" ? "实时" : "源码"} · ${session.source.length} 字符${host.native ? (durable >= revision() ? " · 已持久恢复" : received >= revision() ? " · 已接收" : "") : " · 浏览器内存文稿"}`;
+  status.textContent = `${session.dirty ? "未保存" : "已保存基线"} · ${session.source.length} 字符`;
   modeButton.textContent = mode === "rich" ? "源码" : "实时";
+  const toggle = commands.find((c) => c.id === "toggleSource")!;
+  modeButton.title = `${toggle.title}（${shortcutLabel(toggle)}）`;
   publishCommandState();
 }
 const pendingFlushes = new Map<string, ReturnType<typeof setTimeout>>();
@@ -653,6 +656,7 @@ function execute(id: string): void {
   if (mode === "rich") rich?.captureSelection();
   if (!commandEnabled(id)) return;
   if (id === "toggleSource") {
+    session.setSelection(session.selection);
     const viewport =
       mode === "rich" ? rich?.viewportBookmark() : literal?.viewportBookmark();
     mode = mode === "rich" ? "source" : "rich";
@@ -1015,14 +1019,7 @@ document.addEventListener(
   (event) => {
     if (event.isComposing || composing) return;
     if (!(event.metaKey || event.ctrlKey)) return;
-    const key = event.key.toLowerCase();
-    const definition = commands.find(
-      (c) =>
-        c.key &&
-        c.key === key &&
-        c.modifiers.includes("shift") === event.shiftKey &&
-        c.modifiers.includes("alt") === event.altKey,
-    );
+    const definition = commands.find((c) => matchesShortcut(event, c));
     const id = definition?.id;
     if (id && commandOwnsFocus(id)) {
       event.preventDefault();

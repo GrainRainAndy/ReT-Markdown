@@ -197,7 +197,7 @@ test("command state follows history and owner; edit zoom never changes source or
       .locator("#workspace")
       .evaluate((el) => getComputedStyle(el).fontSize),
   ).toBe(before);
-  await page.keyboard.press("Meta+Shift+m");
+  await page.keyboard.press("Meta+/");
   await expect(page.locator('[aria-label="Markdown 源码"]')).toBeVisible();
   await command(page, "strike");
   await expect.poll(() => source(page)).toContain("~~");

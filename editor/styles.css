@@ -120,6 +120,12 @@ body {
 .ProseMirror a {
   color: var(--accent);
 }
+.syntax-marker {
+  color: var(--muted);
+  font-weight: normal;
+  font-style: normal;
+  text-decoration: none;
+}
 code,
 .cm-editor {
   font:
@@ -159,8 +165,11 @@ code,
   outline: none !important;
 }
 .cm-content {
-  caret-color: var(--fg);
   padding: 0 !important;
+}
+.cm-editor .cm-scroller .cm-content {
+  /* CM's light base theme otherwise overrides a single-class caret rule. */
+  caret-color: var(--fg);
 }
 .cm-line {
   padding: 0 !important;

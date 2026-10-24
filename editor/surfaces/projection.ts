@@ -10,9 +10,9 @@ import {
   mapText,
   type TextMapping,
 } from "../syntax/mapping";
-import { minimalPatch } from "./editing";
+import { minimalPatch, containerContinuation } from "./editing";
 import { mapOffset } from "./commands";
-import type { Patch } from "../core/types";
+import type { Patch, SourceRange } from "../core/types";
 export const schema = new Schema({
   nodes: {
     doc: { content: "block+" },
@@ -128,12 +128,19 @@ export const schema = new Schema({
     },
   },
   marks: {
-    strong: { toDOM: () => ["strong", 0] },
-    em: { toDOM: () => ["em", 0] },
-    strike: { toDOM: () => ["s", 0] },
-    code: { toDOM: () => ["code", 0] },
+    syntax: {
+      inclusive: false,
+      toDOM: () => ["span", { class: "syntax-marker" }, 0],
+    },
+    strong: {
+      attrs: { revealed: { default: false } },
+      toDOM: () => ["strong", 0],
+    },
+    em: { attrs: { revealed: { default: false } }, toDOM: () => ["em", 0] },
+    strike: { attrs: { revealed: { default: false } }, toDOM: () => ["s", 0] },
+    code: { attrs: { revealed: { default: false } }, toDOM: () => ["code", 0] },
     link: {
-      attrs: { url: {} },
+      attrs: { url: {}, revealed: { default: false } },
       toDOM: (n) => [
         "a",
         { "data-url": n.attrs.url, title: "⌘单击打开链接；单击编辑" },
@@ -161,11 +168,13 @@ export class RichProjection {
   readonly runs: Run[] = [];
   readonly records = new Map<string, BlockRecord>();
   readonly replacements = new Map<string, string[]>();
+  readonly markerRanges: SourceRange[] = [];
   constructor(
     readonly source: string,
     previous?: RichProjection,
     change?: Patch | readonly Patch[],
     proseOffset?: number,
+    readonly revealRanges: readonly SourceRange[] = [],
   ) {
     this.projection = buildProjection(source);
     const used = new Set<string>();
@@ -205,16 +214,46 @@ export class RichProjection {
       for (const n of nodes) {
         const start = pos;
         let made: PMNode[] = [];
+        const revealed = revealRanges.some(
+          (range) => range.from === n.from && range.to === n.to,
+        );
+        const marker = (from: number, to: number, at: number): PMNode[] => {
+          if (from === to) return [];
+          const raw = source.slice(from, to),
+            mapped = mapText(raw, from);
+          this.markerRanges.push({ from, to });
+          this.runs.push({
+            pos: at,
+            length: mapped.text.length,
+            mapping: mapped.mapping,
+            node: { ...n, type: "syntax", text: mapped.text },
+          });
+          return [schema.text(mapped.text, [schema.marks.syntax!.create()])];
+        };
         if (n.type === "text" || n.type === "raw" || n.type === "inlineCode") {
           const text = n.text ?? n.raw;
           if (text) {
             const ms =
               n.type === "inlineCode"
-                ? [...marks, schema.marks.code!.create()]
+                ? [...marks, schema.marks.code!.create({ revealed })]
                 : marks;
-            made = [schema.text(text, ms)];
+            const prefix =
+              revealed && n.type === "inlineCode"
+                ? marker(n.from, n.mapping.from, pos)
+                : [];
+            const prefixLength = prefix.reduce(
+              (size, node) => size + node.nodeSize,
+              0,
+            );
+            made = [
+              ...prefix,
+              schema.text(text, ms),
+              ...(revealed && n.type === "inlineCode"
+                ? marker(n.mapping.to, n.to, pos + prefixLength + text.length)
+                : []),
+            ];
             this.runs.push({
-              pos,
+              pos: pos + prefixLength,
               length: text.length,
               mapping: n.mapping,
               node: n,
@@ -234,10 +273,33 @@ export class RichProjection {
               linkReference: "link",
             } as Record<string, string>
           )[n.type]!;
-          made = inline(n.children, pos, [
+          const prefix = revealed
+            ? marker(n.from, n.children[0]?.from ?? n.to, pos)
+            : [];
+          const prefixLength = prefix.reduce(
+            (size, node) => size + node.nodeSize,
+            0,
+          );
+          const content = inline(n.children, pos + prefixLength, [
             ...marks,
-            schema.marks[name]!.create({ url: n.attributes.url ?? "" }),
+            schema.marks[name]!.create({
+              url: n.attributes.url ?? "",
+              revealed,
+            }),
           ]);
+          made = [
+            ...prefix,
+            ...content,
+            ...(revealed
+              ? marker(
+                  n.children.at(-1)?.to ?? n.to,
+                  n.to,
+                  pos +
+                    prefixLength +
+                    content.reduce((size, node) => size + node.nodeSize, 0),
+                )
+              : []),
+          ];
         } else if (n.type === "break") {
           made = [schema.nodes.hard_break!.create()];
           this.runs.push({ pos, length: 1, mapping: n.mapping, node: n });
@@ -340,9 +402,22 @@ export class RichProjection {
         );
       if (pendingOpening)
         n = { ...n, attributes: { ...n.attributes, pendingOpening: true } };
+      const pendingHeading =
+        n.type === "heading" &&
+        /^#{1,6}$/.test(n.raw) &&
+        proseOffset !== undefined &&
+        n.from <= proseOffset &&
+        proseOffset <= n.to &&
+        previous !== undefined &&
+        (previous.source !== source ||
+          [...previous.records.values()].some(
+            (r) => r.node.from === n.from && r.node.attributes.pendingHeading,
+          ));
+      if (pendingHeading)
+        n = { ...n, attributes: { ...n.attributes, pendingHeading: true } };
       const id = idFor(n, parentId);
       this.records.set(id, { id, pos, node: n, parentId });
-      if (pendingOpening) {
+      if (pendingOpening || pendingHeading) {
         this.runs.push({
           pos: pos + 1,
           length: n.raw.length,
@@ -369,6 +444,66 @@ export class RichProjection {
               ? "table_cell"
               : n.type;
         const content = inline(n.children, pos + 1, [], id);
+        // A trailing empty hard-break line is omitted by the semantic parser.
+        // Keep its end position inside the same paragraph for caret and deletion.
+        const tailFrom = n.children.at(-1)?.to ?? n.from;
+        const breakStart =
+          n.type === "paragraph"
+            ? /^[ \t]{2,}(?:\r\n|\n)/.exec(source.slice(tailFrom))
+            : null;
+        const continuation = containerContinuation(source, n.from);
+        const continuationStart = tailFrom + (breakStart?.[0].length ?? 0);
+        const continuationEnd = continuationStart + continuation.length;
+        const pendingBreak =
+          !!breakStart &&
+          source.slice(continuationStart, continuationEnd) === continuation &&
+          (continuationEnd === source.length ||
+            /^[\r\n]/.test(source.slice(continuationEnd)));
+        if (pendingBreak) {
+          const at =
+            pos + 1 + content.reduce((size, child) => size + child.nodeSize, 0);
+          content.push(schema.nodes.hard_break!.create());
+          this.runs.push({
+            pos: at,
+            length: 1,
+            node: n,
+            mapping: {
+              from: tailFrom,
+              to: continuationEnd,
+              textLength: 1,
+              segments: [
+                { from: tailFrom, to: continuationEnd, textFrom: 0, textTo: 1 },
+              ],
+            },
+          });
+        }
+        // The semantic AST deliberately omits trailing whitespace. In an
+        // editor it still needs positions, without changing Markdown bytes.
+        if (!pendingBreak && ["paragraph", "heading", "gap"].includes(n.type)) {
+          const from =
+            n.children.at(-1)?.to ??
+            n.from +
+              (n.type === "heading"
+                ? (/^#{1,6}(?:[ \t]+|$)/.exec(n.raw)?.[0].length ?? 0)
+                : 0);
+          const raw =
+            n.type === "gap"
+              ? /^[ \t]*/.exec(source.slice(from))![0]
+              : source.slice(from, n.to);
+          if (/^[ \t]+$/.test(raw)) {
+            const mapped = mapText(raw, from);
+            this.runs.push({
+              pos:
+                pos +
+                1 +
+                content.reduce((size, child) => size + child.nodeSize, 0),
+              length: raw.length,
+              mapping: mapped.mapping,
+              node: { ...n, text: raw },
+            });
+            content.push(schema.text(raw));
+          }
+        }
         if (!content.length)
           this.runs.push({
             pos: pos + 1,
@@ -378,12 +513,16 @@ export class RichProjection {
                 n.from +
                 (n.type === "tableCell"
                   ? (/^\s*\|?\s*/.exec(n.raw)?.[0].length ?? 0)
-                  : 0),
+                  : n.type === "heading"
+                    ? (/^#{1,6}(?:[ \t]+|$)/.exec(n.raw)?.[0].length ?? 0)
+                    : 0),
               to:
                 n.from +
                 (n.type === "tableCell"
                   ? (/^\s*\|?\s*/.exec(n.raw)?.[0].length ?? 0)
-                  : 0),
+                  : n.type === "heading"
+                    ? (/^#{1,6}(?:[ \t]+|$)/.exec(n.raw)?.[0].length ?? 0)
+                    : 0),
               textLength: 0,
               segments: [],
             },

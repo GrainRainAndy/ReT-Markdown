@@ -4,6 +4,22 @@ import WebKit
 @testable import ReTPreview
 
 final class WebKitRenderTests: RecoveryIsolatedTestCase {
+ @MainActor func testSourceCaretUsesActualWebKitAppearance() async throws {
+  let document = try await attachEditor(source: "中文 caret")
+  defer { environment.close(document) }
+  document.host!.command("toggleSource")
+  try await eventually { (try? await self.evaluateEditor(document, "return !!document.querySelector('.source-surface .cm-content')")) as? Bool == true }
+  for mode in ["dark", "light", "system"] {
+   document.host!.send("appearance", payload:["mode":mode])
+   try await eventually { (try? await self.evaluateEditor(document, "return document.documentElement.dataset.appearance", arguments:[:])) as? String == mode }
+   let colors = try await evaluateEditor(document, """
+   const content = document.querySelector('.cm-content'); content.focus();
+   return {caret:getComputedStyle(content).caretColor, text:getComputedStyle(document.body).color};
+   """) as! [String:String]
+   XCTAssertEqual(colors["caret"], colors["text"], "Appearance: " + mode)
+  }
+  XCTAssertEqual(document.state.received.source, "中文 caret")
+ }
  static var entry: URL {
   if let path = ProcessInfo.processInfo.environment["RET_TEST_WEB_ENTRY"] { return URL(fileURLWithPath: path) }
   return URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("dist/web/index.html")

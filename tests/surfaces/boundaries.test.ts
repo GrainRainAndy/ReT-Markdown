@@ -9,6 +9,41 @@ import {
 import { RichProjection } from "../../editor/surfaces/projection";
 import { recoverProseSource } from "../../editor/surfaces/recovery";
 import { schema } from "../../editor/surfaces/projection";
+it("keeps a typed bare ATX marker editable until a separator is present", () => {
+  const before = new RichProjection("");
+  const pending = new RichProjection(
+    "#",
+    before,
+    { from: 0, to: 0, insert: "#" },
+    1,
+  );
+  expect(pending.doc.firstChild!.type.name).toBe("paragraph");
+  expect(pending.doc.textContent).toBe("#");
+  expect(pending.sourceAt(pending.positionAt(1))).toBe(1);
+  const title = new RichProjection(
+    "# ",
+    pending,
+    { from: 1, to: 1, insert: " " },
+    2,
+  );
+  expect(title.doc.firstChild!.type.name).toBe("heading");
+  expect(title.sourceAt(title.positionAt(2))).toBe(2);
+  expect(new RichProjection("#").doc.firstChild!.type.name).toBe("heading");
+});
+it.each(["A ", "A   ", "**A** ", "* A ", "> A ", "   ", "A\r\n\r\n   "])(
+  "retains editable trailing spaces: %j",
+  (source) => {
+    const p = new RichProjection(source);
+    const count = / +$/.exec(source)![0].length;
+    expect(p.doc.textContent.endsWith(" ".repeat(count))).toBe(true);
+    const positions = [];
+    for (let at = source.length - count; at <= source.length; at++) {
+      positions.push(p.positionAt(at));
+      expect(p.sourceAt(p.positionAt(at))).toBe(at);
+    }
+    expect(new Set(positions).size).toBe(count + 1);
+  },
+);
 function apply(source: string, intent: any) {
   const d = new DocumentSession(source);
   d.apply(intent.patches, intent.selection);
@@ -140,3 +175,13 @@ it("maps word and line deletion through semantic text rather than one grapheme",
   });
   expect(p.deletionRange(0, false, "word")).toEqual({ from: 0, to: 5 });
 });
+it.each(["* item  \n  ", "9. item  \r\n   ", "> * item  \n>   "])(
+  "empty hard-break continuation has its own mapped position: %s",
+  (source) => {
+    const p = new RichProjection(source);
+    expect(p.doc.textBetween(0, p.doc.content.size, "\n", "\n")).toContain(
+      "item\n",
+    );
+    expect(p.sourceAt(p.positionAt(source.length))).toBe(source.length);
+  },
+);

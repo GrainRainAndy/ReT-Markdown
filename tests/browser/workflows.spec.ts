@@ -1,5 +1,38 @@
 import { test, expect } from "@playwright/test";
 import { load, command, source } from "./helpers";
+for (const [marker, next, indent] of [
+  ["*", "*", "  "],
+  ["9.", "10.", "   "],
+]) {
+  test(`list ${marker} hard break retains continuation and root history`, async ({
+    page,
+  }) => {
+    await load(page, `${marker} item\n\nkeep`);
+    await page.locator(".ProseMirror li p").click();
+    await page.keyboard.press("End");
+    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type("next");
+    await expect
+      .poll(() => source(page))
+      .toBe(`${marker} item  \n${indent}next\n\nkeep`);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => source(page))
+      .toBe(`${marker} item  \n${indent}next\n${next} \n\nkeep`);
+    await page.keyboard.type("new");
+    await expect(page.locator(".ProseMirror li")).toHaveCount(2);
+    await command(page, "undo");
+    await command(page, "undo");
+    await expect
+      .poll(() => source(page))
+      .toBe(`${marker} item  \n${indent}next\n\nkeep`);
+    await command(page, "redo");
+    await page.keyboard.type("again");
+    await expect
+      .poll(() => source(page))
+      .toBe(`${marker} item  \n${indent}next\n${next} again\n\nkeep`);
+  });
+}
 test("list Tab moves selected item with its subtree and Shift Tab reverses it", async ({
   page,
 }) => {

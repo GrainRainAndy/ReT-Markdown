@@ -50,8 +50,10 @@ final class ProtocolTests: RecoveryIsolatedTestCase {
    for value in ["https://example.com/x","http://example.com","mailto:test@example.com"] { XCTAssertNotNil(EditorHost.externalURL(value)) }
    for value in ["javascript:alert(1)","file:///etc/passwd","https:","https://example.com\nattack","data:text/html,x"] { XCTAssertNil(EditorHost.externalURL(value)) }
    let definitions = CommandDefinition.load(from:WebKitRenderTests.entry.deletingLastPathComponent().appendingPathComponent("commands.json"))
-   XCTAssertEqual(definitions.first(where:{$0.id == "toggleSource"})?.key,"m")
-   XCTAssertEqual(definitions.first(where:{$0.id == "toggleSource"})?.modifiers,["shift"])
+   XCTAssertEqual(definitions.first(where:{$0.id == "toggleSource"})?.key,"/")
+   XCTAssertEqual(definitions.first(where:{$0.id == "toggleSource"})?.modifiers,[])
+   XCTAssertEqual(definitions.first(where:{$0.id == "strike"})?.command,false)
+   XCTAssertEqual(definitions.first(where:{$0.id == "strike"})?.modifiers,["control","shift"])
    for id in ["strike","inlineCode","zoomIn","zoomOut","zoomReset"] { XCTAssertNotNil(definitions.first(where:{$0.id == id})) }
   }
  }

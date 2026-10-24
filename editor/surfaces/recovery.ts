@@ -5,6 +5,7 @@ function serialize(node: PMNode, eol: string): string {
   if (node.isText) {
     let text = node.text ?? "";
     for (const m of [...node.marks].reverse()) {
+      if (m.attrs.revealed) continue;
       const d = (
         { strong: "**", em: "*", strike: "~~", code: "`" } as Record<
           string,

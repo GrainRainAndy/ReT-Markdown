@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """Bind the final committed inputs and actual candidate bundle, without launching it."""
+import argparse
 import hashlib
 import json
 from pathlib import Path
 import plistlib
 import re
 import subprocess
-import sys
 root = Path(__file__).resolve().parent.parent
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("output", type=Path)
+parser.add_argument("--expected-build", required=True)
+parser.add_argument("--evidence-root", required=True, type=Path)
+args = parser.parse_args()
+evidence_root = args.evidence_root.resolve()
+if not evidence_root.is_dir():
+    parser.error("Evidence root must exist")
 
 def command(*args):
     return subprocess.check_output(args, cwd=root).decode().strip()
@@ -36,7 +44,7 @@ version = json.loads((root / "package.json").read_text())["version"]
 app = root / "build/rewrite" / version / "ReT Markdown Preview.app"
 plist = plistlib.loads((app / "Contents/Info.plist").read_bytes())
 assert plist["CFBundleShortVersionString"] == version
-assert plist["CFBundleVersion"] == "3"
+assert plist["CFBundleVersion"] == args.expected_build
 bundle = [item(p, app) for p in sorted(app.rglob("*")) if p.is_file()]
 web = app / "Contents/Resources/web"
 dist = root / "dist/web"
@@ -55,7 +63,6 @@ signature = subprocess.run(["codesign", "-d", "--verbose=4", str(app)], capture_
 canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 node = Path(command("which", "node")).resolve()
 record = {"sourceCommit": head, "version": version, "build": plist["CFBundleVersion"], "bundleID": plist["CFBundleIdentifier"], "appPath": str(app), "macOS": command("sw_vers", "-productVersion"), "osBuild": command("sw_vers", "-buildVersion"), "architecture": command("uname", "-m"), "node": {"path": str(node), "version": command(str(node), "--version"), "sha256": digest(node.read_bytes())}, "nativeReleaseBinary": {"path": str(release), "sha256": digest(release.read_bytes()), "uuid": release_uuid}, "nativeBundleUUID": bundle_uuid, "signature": signature, "inputManifestSHA256": digest(canonical(inputs)), "bundleManifestSHA256": digest(canonical(bundle)), "bundleBytes": sum(p["bytes"] for p in bundle), "inputsMatchCommit": True, "bundledWebMatchesDist": True, "testWebEntry": str(web / "index.html"), "digestAlgorithm": "SHA256 of compact UTF8 JSON sorted keys and path-ordered entries, ensure_ascii=False", "inputs": inputs, "bundle": bundle}
-evidence_root = root / "build/rewrite/verification/2026-10-24/b08-fix"
 evidence_paths = list(evidence_root.glob("*.log"))
 evidence_paths += list(evidence_root.glob("*.jsonl"))
 evidence_paths += list(evidence_root.glob("*.md"))
@@ -66,6 +73,7 @@ evidence = [item(p, evidence_root) for p in sorted(set(evidence_paths))]
 record["evidence"] = evidence
 record["evidenceManifestSHA256"] = digest(canonical(evidence))
 record["evidenceSourceCommit"] = head
-out = Path(sys.argv[1]); out.parent.mkdir(parents=True, exist_ok=True)
+record["evidenceRoot"] = str(evidence_root)
+out = args.output; out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n")
 print(json.dumps({k: v for k, v in record.items() if k not in ("inputs", "bundle", "signature", "evidence")}, ensure_ascii=False, indent=2))
